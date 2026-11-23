@@ -1,0 +1,756 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Arturia API",
+    "version": "0.1.0"
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/scopes/{scopeId}/conversations": {
+      "parameters": [
+        {
+          "name": "scopeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "post": {
+        "operationId": "createConversation",
+        "summary": "Create a conversation in the selected scope",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Conversation created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listConversations",
+        "summary": "List conversations in the selected scope",
+        "responses": {
+          "200": {
+            "description": "Conversations in the authorized scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      }
+    },
+    "/v1/scopes/{scopeId}/conversations/{conversationId}": {
+      "parameters": [
+        {
+          "name": "scopeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "conversationId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getConversation",
+        "summary": "Get conversation history and persisted turns",
+        "responses": {
+          "200": {
+            "description": "Conversation and turn history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      }
+    },
+    "/v1/scopes/{scopeId}/conversations/{conversationId}/turns": {
+      "parameters": [
+        {
+          "name": "scopeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "conversationId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "post": {
+        "operationId": "acceptTurn",
+        "summary": "Accept a chat turn for durable processing",
+        "description": "A repeat with the same idempotency key and input in the same conversation returns the existing turn ID and current status.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Turn accepted or previously accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/IdempotencyConflict"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      }
+    },
+    "/v1/scopes/{scopeId}/turns/{turnId}": {
+      "parameters": [
+        {
+          "name": "scopeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "turnId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getTurn",
+        "summary": "Get the current persisted state of a turn",
+        "responses": {
+          "200": {
+            "description": "Current authorized turn snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      }
+    },
+    "/v1/scopes/{scopeId}/turns/{turnId}/events": {
+      "parameters": [
+        {
+          "name": "scopeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "turnId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "streamTurnEvents",
+        "summary": "Read persisted turn events after a cursor",
+        "description": "This operation only reads existing work. The server revalidates current authorization before emitting each batch and closes the stream when access is revoked.",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Last text sequence received for this turn. A value of 0 reads from the beginning.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "UTF-8 SSE. The event name matches the JSON payload type: text or status. Heartbeats are SSE comments without data. A terminal status follows all authorized blocks through lastSeq and closes the stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "x-event-schema": "./sse.schema.json"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "responses": {
+      "InvalidRequest": {
+        "description": "The request is invalid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PublicError"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "A current access token is required.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PublicError"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The current authorization does not permit this operation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PublicError"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The resource was not found in the authorized scope.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PublicError"
+            }
+          }
+        }
+      },
+      "IdempotencyConflict": {
+        "description": "The idempotency key was already used for a different input.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PublicError"
+            }
+          }
+        }
+      },
+      "RequestError": {
+        "description": "The request failed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PublicError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ConversationInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ConversationSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scopeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "scopeId",
+          "conversationId",
+          "createdAt"
+        ]
+      },
+      "ConversationList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationSummary"
+            }
+          }
+        },
+        "required": [
+          "conversations"
+        ]
+      },
+      "ConversationDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scopeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "turns": {
+            "type": "array",
+            "description": "Persisted turns in submission order.",
+            "items": {
+              "$ref": "#/components/schemas/ConversationTurn"
+            }
+          }
+        },
+        "required": [
+          "scopeId",
+          "conversationId",
+          "createdAt",
+          "turns"
+        ]
+      },
+      "ConversationTurn": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "$ref": "#/components/schemas/TurnInput"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/TurnSnapshot"
+          }
+        },
+        "required": [
+          "input",
+          "snapshot"
+        ]
+      },
+      "TurnInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "TurnStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "incomplete",
+          "failed",
+          "cancelled",
+          "blocked"
+        ]
+      },
+      "TurnAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "turnId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/TurnStatus"
+          }
+        },
+        "required": [
+          "turnId",
+          "status"
+        ]
+      },
+      "TurnSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "turnId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scopeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/TurnStatus"
+          },
+          "lastSeq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Last deliverable text sequence. A terminal snapshot fixes the final sequence. Zero means no text is currently deliverable."
+          },
+          "result": {
+            "$ref": "#/components/schemas/TurnResult"
+          },
+          "error": {
+            "$ref": "#/components/schemas/PublicError"
+          }
+        },
+        "required": [
+          "turnId",
+          "conversationId",
+          "scopeId",
+          "status",
+          "lastSeq"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "failed",
+                    "blocked"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "lastSeq": {
+                  "const": 0
+                }
+              },
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "incomplete"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "result",
+                "error"
+              ],
+              "properties": {
+                "lastSeq": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "completed"
+                },
+                "lastSeq": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "result"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "completed",
+                    "cancelled"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "error": false
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "lastSeq": {
+                  "const": 0
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "result": false
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "queued"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "lastSeq": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TurnResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "PublicError": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "requestId"
+        ]
+      }
+    }
+  }
+}

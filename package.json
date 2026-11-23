@@ -1,0 +1,36 @@
+{
+  "name": "arturia-api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test:contract": "node scripts/test-contract.mjs",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "verify": "node scripts/verify.mjs",
+    "verify:local": "node scripts/verify.mjs --local",
+    "build": "tsc --project tsconfig.json && tsc --project tsconfig.build.json",
+    "test": "npm run test:contract && npm run test:unit && npm run test:infra",
+    "test:infra": "vitest run --project infra",
+    "synth": "cdk synth --no-lookups --no-telemetry --no-notices"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "13.1.0",
+    "@aws-sdk/client-dynamodb": "3.1175.0",
+    "@types/node": "24.19.2",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "aws-cdk": "2.1149.0",
+    "typescript": "6.0.3",
+    "vitest": "5.1.1"
+  },
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": "24.22.3"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.278.0",
+    "constructs": "10.8.1"
+  },
+  "packageManager": "npm@11.19.1"
+}

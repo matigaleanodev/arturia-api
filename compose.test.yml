@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 Matias Galeano
+
+services:
+  dynamodb:
+    image: amazon/dynamodb-local@sha256:6ada631ec7aa5fc83446855eb17233e3dad184fec47477e8140c6c569cfe0c86
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb", "-disableTelemetry"]
+    ports:
+      - "127.0.0.1::8000"

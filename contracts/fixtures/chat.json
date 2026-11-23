@@ -1,0 +1,198 @@
+{
+  "createConversation": {
+    "request": {
+      "title": "Conversación de ejemplo"
+    },
+    "response": {
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "title": "Conversación de ejemplo",
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  },
+  "listConversations": {
+    "conversations": [
+      {
+        "scopeId": "fixture-personal",
+        "conversationId": "fixture-conversation",
+        "title": "Conversación de ejemplo",
+        "createdAt": "2026-01-01T00:00:00Z"
+      }
+    ]
+  },
+  "getConversation": {
+    "scopeId": "fixture-personal",
+    "conversationId": "fixture-conversation",
+    "title": "Conversación de ejemplo",
+    "createdAt": "2026-01-01T00:00:00Z",
+    "turns": [
+      {
+        "input": {
+          "text": "Mostrame una respuesta de ejemplo."
+        },
+        "snapshot": {
+          "turnId": "fixture-turn",
+          "scopeId": "fixture-personal",
+          "conversationId": "fixture-conversation",
+          "status": "completed",
+          "lastSeq": 2,
+          "result": {
+            "text": "Hola, este es un resultado sintético."
+          }
+        }
+      }
+    ]
+  },
+  "acceptTurn": {
+    "headers": {
+      "Idempotency-Key": "fixture-submission"
+    },
+    "request": {
+      "text": "Mostrame una respuesta de ejemplo."
+    },
+    "response": {
+      "turnId": "fixture-turn",
+      "status": "queued"
+    }
+  },
+  "replayTurn": {
+    "headers": {
+      "Idempotency-Key": "fixture-submission"
+    },
+    "request": {
+      "text": "Mostrame una respuesta de ejemplo."
+    },
+    "response": {
+      "turnId": "fixture-turn",
+      "status": "queued"
+    }
+  },
+  "idempotencyConflict": {
+    "headers": {
+      "Idempotency-Key": "fixture-submission"
+    },
+    "request": {
+      "text": "Prepará un ejemplo diferente."
+    },
+    "response": {
+      "code": "IDEMPOTENCY_CONFLICT",
+      "message": "La clave ya se usó con otro mensaje de ejemplo.",
+      "requestId": "fixture-request-conflict"
+    }
+  },
+  "revokedPermission": {
+    "code": "PERMISSION_REVOKED",
+    "message": "Se revocó el permiso de ejemplo.",
+    "requestId": "fixture-request-revoked"
+  },
+  "turnSnapshots": {
+    "queued": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "queued",
+      "lastSeq": 0
+    },
+    "running": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "running",
+      "lastSeq": 1,
+      "result": {
+        "text": "Hola, "
+      }
+    },
+    "completed": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "completed",
+      "lastSeq": 2,
+      "result": {
+        "text": "Hola, este es un resultado sintético."
+      }
+    },
+    "incomplete": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "incomplete",
+      "lastSeq": 1,
+      "result": {
+        "text": "Hola, "
+      },
+      "error": {
+        "code": "GENERATION_FAILED",
+        "message": "Falló la generación simulada.",
+        "requestId": "fixture-request-generation"
+      }
+    },
+    "failed": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "failed",
+      "lastSeq": 0,
+      "error": {
+        "code": "GENERATION_FAILED",
+        "message": "Falló la generación simulada.",
+        "requestId": "fixture-request-generation"
+      }
+    },
+    "cancelled": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "cancelled",
+      "lastSeq": 0
+    },
+    "blocked": {
+      "turnId": "fixture-turn",
+      "scopeId": "fixture-personal",
+      "conversationId": "fixture-conversation",
+      "status": "blocked",
+      "lastSeq": 0,
+      "error": {
+        "code": "PERMISSION_REVOKED",
+        "message": "Se revocó el permiso de ejemplo.",
+        "requestId": "fixture-request-revoked"
+      }
+    }
+  },
+  "cancelTurn": {
+    "turnId": "fixture-turn",
+    "scopeId": "fixture-personal",
+    "conversationId": "fixture-conversation",
+    "status": "cancelled",
+    "lastSeq": 0
+  },
+  "stream": {
+    "heartbeat": ": keep-alive\n\n",
+    "events": [
+      {
+        "type": "status",
+        "turnId": "fixture-turn",
+        "status": "running"
+      },
+      {
+        "type": "text",
+        "turnId": "fixture-turn",
+        "seq": 1,
+        "text": "Hola, "
+      },
+      {
+        "type": "text",
+        "turnId": "fixture-turn",
+        "seq": 2,
+        "text": "este es un resultado sintético."
+      },
+      {
+        "type": "status",
+        "turnId": "fixture-turn",
+        "status": "completed",
+        "lastSeq": 2
+      }
+    ]
+  }
+}

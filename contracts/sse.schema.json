@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Arturia v1 SSE payload",
+  "description": "JSON in a data field of a text or status event. SSE heartbeat comments have no JSON payload.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/TextEvent"
+    },
+    {
+      "$ref": "#/$defs/ActiveStatusEvent"
+    },
+    {
+      "$ref": "#/$defs/TerminalStatusEvent"
+    }
+  ],
+  "$defs": {
+    "TextEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Monotonic text sequence within this turn."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "turnId",
+        "seq",
+        "text"
+      ]
+    },
+    "ActiveStatusEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "status"
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "turnId",
+        "status"
+      ]
+    },
+    "TerminalStatusEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "status"
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "incomplete",
+            "failed",
+            "cancelled",
+            "blocked"
+          ]
+        },
+        "lastSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Final deliverable text sequence. Zero indicates no deliverable text."
+        }
+      },
+      "required": [
+        "type",
+        "turnId",
+        "status",
+        "lastSeq"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "failed",
+                  "blocked"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "lastSeq": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "lastSeq": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
