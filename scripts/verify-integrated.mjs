@@ -131,6 +131,7 @@ try {
     '--retries=0', '--reporter=list,json', '--output', join(runDir, 'test-results')], {
     ARTURIA_INTEGRATED: '1', ARTURIA_WEB_ORIGIN: webOrigin, ARTURIA_API_ORIGIN: apiOrigin,
     ARTURIA_CONTROL_DIR: runDir, PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath,
+    TMPDIR: runDir,
   })
   const report = JSON.parse(await readFile(reportPath, 'utf8'))
   const specs = report.suites.flatMap(suite => suite.specs)
