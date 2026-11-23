@@ -20,9 +20,12 @@ Usá la versión de Node.js de `.nvmrc` e instalá las dependencias con `npm ci`
 | `npm run verify` | Valida contratos, ejecuta pruebas unitarias y de infraestructura, y compila TypeScript. |
 | `npm run test:integration` | Ejecuta pruebas de persistencia con Docker y Docker Compose. |
 | `npm run verify:local` | Ejecuta la verificación y la suite de persistencia local. |
+| `ARTURIA_WEB_DIR=../arturia npm run verify:integrated` | Ejecuta los escenarios de chat de Angular y la API con Chromium y DynamoDB Local en Linux. |
 | `npm run synth` | Sintetiza el stack CDK en `cdk.out/` con los lookups de AWS desactivados. |
 
 Las pruebas de integración inician una instancia aislada de DynamoDB Local en un puerto local temporal, con credenciales sintéticas. Docker puede descargar la imagen fijada en el primer uso. La suite elimina el contenedor, los datos en memoria y la red al terminar. Cada ejecución tiene su propia tabla. Para elegir un archivo o escenario de integración, usá `npm run test:integration -- dynamodb` o `npm run test:integration -- -t local_dynamodb_conditional_write`.
+
+Instalá las dependencias de ambos repositorios con `npm ci` y Chromium en el frontend con `npm exec -- playwright install chromium`. La suite integrada usa dos orígenes loopback y verifica el digest del contrato en `scripts/integrated-scenarios.json`.
 
 ## Licencia
 

@@ -1,0 +1,8 @@
+{
+  "contractSha256": "131126f1d8c7d55ce8a7d1d4f885f1d4e4650dc4531297456a0969d746ce60b9",
+  "scenarios": [
+    "accepted_turn_finishes_after_tab_close",
+    "restored_conversation_has_one_answer",
+    "foreign_scope_cannot_read_turn"
+  ]
+}

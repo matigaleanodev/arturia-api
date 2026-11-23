@@ -20,9 +20,12 @@ Use the Node.js version in `.nvmrc` and install dependencies with `npm ci`.
 | `npm run verify` | Validate contracts, run unit and infrastructure tests, and build TypeScript. |
 | `npm run test:integration` | Run persistence tests with Docker and Docker Compose. |
 | `npm run verify:local` | Run verification and the local persistence suite. |
+| `ARTURIA_WEB_DIR=../arturia npm run verify:integrated` | Run the Angular + API chat scenarios with Chromium and DynamoDB Local on Linux. |
 | `npm run synth` | Synthesize the CDK stack locally into `cdk.out/` with AWS lookups disabled. |
 
 Integration tests start an isolated DynamoDB Local instance on a temporary loopback port with synthetic credentials. Docker may download the pinned image on first use. The suite removes its container, in-memory data, and network on exit. Each execution gets its own table. To select an integration file or scenario, use `npm run test:integration -- dynamodb` or `npm run test:integration -- -t local_dynamodb_conditional_write`.
+
+Install both checkouts with `npm ci` and install Chromium in the web checkout with `npm exec -- playwright install chromium`. The integrated suite uses separate loopback origins and enforces the contract digest in `scripts/integrated-scenarios.json`.
 
 ## License
 

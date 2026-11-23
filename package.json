@@ -7,6 +7,7 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "verify": "node scripts/verify.mjs",
+    "verify:integrated": "exec node scripts/verify-integrated.mjs",
     "verify:local": "node scripts/verify.mjs --local",
     "build": "tsc --project tsconfig.json && tsc --project tsconfig.build.json",
     "test": "npm run test:contract && npm run test:unit && npm run test:infra",
