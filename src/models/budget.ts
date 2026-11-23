@@ -16,6 +16,11 @@ export interface Tariff {
   readonly inputPerMillion: number
   readonly outputPerMillion: number
   readonly toolCall: number
+  readonly shortContext?: {
+    readonly maxInputTokens: number
+    readonly inputPerMillion: number
+    readonly outputPerMillion: number
+  }
 }
 export interface Usage {
   readonly inputTokens: number
@@ -24,7 +29,7 @@ export interface Usage {
   readonly toolTokens: number
   readonly toolCalls: number
 }
-type Receipt = { kind: 'unknown' } | { kind: 'invoice'; costMicros: number } | { kind: 'reported'; usage: Usage }
+type Receipt = { kind: 'unknown' } | { kind: 'invoice'; costMicros: number } | { kind: 'reported'; usage: Usage; noCharge?: boolean }
 type Audit = { model: string; operation: 'chat' | 'tool' | 'extraction' | 'automation'; tariff: Tariff }
 type Writes = NonNullable<TransactWriteCommandInput['TransactItems']>
 const attemptKey = (id: string) => ({ pk: 'MODEL-ATTEMPT#' + id, sk: 'RECEIPT' })
@@ -35,8 +40,15 @@ const counterKeys = (month: string, provider: string) => ['TOTAL', 'PROVIDER#' +
 export function tariffSnapshot(t: Tariff | undefined, time: number): Tariff {
   if (!t || ![t.inputPerMillion, t.outputPerMillion, t.toolCall, t.verifiedAt, t.expiresAt, time].every(uint) ||
       time < t.verifiedAt || time >= t.expiresAt) throw new ModelPolicyDenied('Unverified model tariff')
-  const { verifiedAt, expiresAt, inputPerMillion, outputPerMillion, toolCall } = t
-  return { verifiedAt, expiresAt, inputPerMillion, outputPerMillion, toolCall }
+  const { verifiedAt, expiresAt, inputPerMillion, outputPerMillion, toolCall, shortContext } = t
+  if (shortContext && (![shortContext.maxInputTokens, shortContext.inputPerMillion, shortContext.outputPerMillion].every(uint) ||
+      shortContext.inputPerMillion > inputPerMillion || shortContext.outputPerMillion > outputPerMillion)) {
+    throw new ModelPolicyDenied('Invalid short-context tariff')
+  }
+  return { verifiedAt, expiresAt, inputPerMillion, outputPerMillion, toolCall, ...(shortContext && { shortContext: {
+    maxInputTokens: shortContext.maxInputTokens, inputPerMillion: shortContext.inputPerMillion,
+    outputPerMillion: shortContext.outputPerMillion,
+  } }) }
 }
 
 function metered(u: Usage): Usage {
@@ -48,7 +60,9 @@ function metered(u: Usage): Usage {
 
 export function costMicros(tariff: Tariff, usage: Usage) {
   const u = metered(usage)
-  const { inputPerMillion, outputPerMillion, toolCall } = tariff
+  const { toolCall, shortContext } = tariff
+  const { inputPerMillion, outputPerMillion } =
+    shortContext && u.inputTokens <= shortContext.maxInputTokens ? shortContext : tariff
   if (![inputPerMillion, outputPerMillion, toolCall].every(uint)) throw new RangeError('Invalid model price')
   const out = BigInt(u.outputTokens) + BigInt(u.reasoningTokens) + BigInt(u.toolTokens)
   const tokenCost = BigInt(u.inputTokens) * BigInt(inputPerMillion) + out * BigInt(outputPerMillion)
@@ -110,7 +124,7 @@ export class ModelBudget {
     if (!row) throw new Error('Unknown model attempt')
     if (receipt.kind === 'unknown') return
     const usage = receipt.kind === 'reported' ? metered(receipt.usage) : undefined
-    const cost = receipt.kind === 'invoice' ? receipt.costMicros : costMicros(row.tariff, usage!)
+    const cost = receipt.kind === 'invoice' ? receipt.costMicros : receipt.noCharge ? 0 : costMicros(row.tariff, usage!)
     if (!uint(cost)) throw new RangeError('Invalid model charge')
     const matches = (item: typeof row) => item.state === 'settled' && item.costMicros === cost &&
       (usage === undefined || (item.usage && Object.entries(usage).every(([k, v]) => item.usage[k] === v)))

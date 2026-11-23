@@ -15,7 +15,7 @@ interface Configuration {
   readonly tariff?: Tariff
   readonly limits: Limits
 }
-interface Outbound {
+export interface ModelOutbound {
   readonly provider: string
   readonly model: string
   readonly attemptId: string
@@ -23,11 +23,15 @@ interface Outbound {
   readonly limits: Limits
   readonly signal: AbortSignal
 }
+export type ModelEvent = ProviderEvent |
+  { readonly type: 'tool'; readonly id: string; readonly name: string; readonly arguments: Record<string, unknown> } |
+  { readonly type: 'usage'; readonly usage: Usage; readonly failed?: boolean; readonly noCharge?: boolean }
+
 export interface ModelTransport {
   // Pure verified upper bound for the complete adapter request, including framing and tool schemas.
   inputTokenBound(text: string, model: string): number
   // Single transport attempt. The adapter enforces the quoted limits and disables SDK retries.
-  stream(request: Outbound): AsyncIterable<ProviderEvent | { type: 'usage'; usage: Usage }>
+  stream(request: ModelOutbound): AsyncIterable<ModelEvent>
 }
 
 // Background callers supply a backend reader that reconstructs the authorized minimum from current
@@ -71,20 +75,29 @@ export async function* dispatchModel(budget: ModelBudget, now: () => Date, confi
   }
 
   let usage: Usage | undefined
+  let failed = false
+  let noCharge = false
   try {
     for await (const event of transport.stream({ attemptId: job.attemptId, provider, model, text, signal: job.signal, limits })) {
       if (usage) throw new Error('Unexpected event after final usage')
-      if (event.type === 'usage') usage = event.usage
-      else if (event.type === 'text') yield event
+      if (event.type === 'usage') {
+        usage = event.usage
+        failed ||= event.failed === true
+        noCharge = event.noCharge === true
+      } else if (event.type === 'tool') {
+        // Chat dispatch only accepts text. A proposal never authorizes tool execution.
+        failed = true
+      } else if (event.type === 'text') yield event
       else throw new Error('Unexpected model event')
     }
     if (!usage) throw new Error('Missing final model usage')
-    await budget.settleAttempt(job.attemptId, { kind: 'reported', usage })
+    await budget.settleAttempt(job.attemptId, { kind: 'reported', usage, noCharge })
   } catch {
     // Cancellation, partial streams, missing billing information, and network errors preserve
     // the full reservation. Never expose raw adapter errors (they may echo the prompt).
     throw new UncertainSend('Model charge unconfirmed')
   }
+  if (failed) throw new Error('Model generation failed')
 }
 
 export function createTurnDispatcher(store: ChatStore, budget: ModelBudget, configure: () => Configuration,

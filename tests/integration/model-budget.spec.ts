@@ -8,7 +8,10 @@ import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { ChatStore, scopePartition } from '../../src/chat/turns.store.js'
 import { createStreamReader, dynamoStreamSource } from '../../src/chat/stream.reader.js'
 import { createChat } from '../../src/chat/turns.js'
+import { cancelTurn } from '../../src/chat/cancel.js'
 import { createGenerationWorker } from '../../src/chat/generate.worker.js'
+import { createCatalogTurnProvider } from '../../src/models/catalog.js'
+import type { ModelWire } from '../../src/models/wire.js'
 import { ModelBudget, costMicros, type Tariff } from '../../src/models/budget.js'
 import { createTurnDispatcher, dispatchModel, type ModelTransport } from '../../src/models/dispatch.js'
 import { integrationDatabase } from '../support/dynamodb.js'
@@ -334,4 +337,170 @@ test('over_budget_chat_never_calls_the_transport_and_emits_a_blocked_terminal', 
   expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({
     status: 'blocked', error: { code: 'MODEL_POLICY_DENIED' },
   })
+})
+
+const candidateTariffs = {
+  openai: { ...price, inputPerMillion: 200_000, outputPerMillion: 750_000, toolCall: 0,
+    shortContext: { maxInputTokens: 272_000, inputPerMillion: 100_000, outputPerMillion: 500_000 } },
+  anthropic: { ...price, inputPerMillion: 2_000_000, outputPerMillion: 10_000_000, toolCall: 0 },
+}
+const candidateModels = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5' }
+const settings = (provider: keyof typeof candidateModels = 'openai') => ({
+  enabled: true, provider, model: candidateModels[provider], maxOutputTokens: 64, tariff: candidateTariffs[provider],
+})
+const modelReply = (events: unknown[]) => new Response(
+  events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join(''),
+  { headers: { 'content-type': 'text/event-stream' } },
+)
+const openAIText = { type: 'response.output_text.delta', delta: 'Parcial sintético' }
+const openAITerminal = (status: string) => ({
+  type: 'response.' + status, response: { status, error: { message: 'private-error-fixture' },
+    usage: { input_tokens: 12, output_tokens: 8, output_tokens_details: { reasoning_tokens: 3 } } },
+})
+
+test.each(['completed', 'failed', 'error'] as const)('catalog reconciles the worker attempt (%s)', async result => {
+  await write(pk(), 'MODEL#openai', goodGrant)
+  budget = new ModelBudget(store, { openai: usd })
+  const wire = vi.fn<ModelWire>(async () => modelReply([openAIText,
+    result === 'error' ? { type: 'error', error: { message: 'private-error-fixture' } } : openAITerminal(result),
+  ]))
+  const ref = await conversation()
+  const id = randomUUID()
+  const worker = createGenerationWorker(store, createCatalogTurnProvider(store, budget, settings, wire))
+  await worker.runTurn(ref, id)
+  await worker.runTurn(ref, randomUUID())
+  expect(wire).toHaveBeenCalledTimes(1)
+  expect(wire.mock.calls[0][0]).toMatchObject({ provider: 'openai', path: '/v1/responses' })
+  expect(wire.mock.calls[0][0].body).not.toContain(actor.userId)
+  expect(wire.mock.calls[0][0].body).not.toContain(scopeId)
+  const row = await store.getTurn(pk(), ref.turnId)
+  expect(row).toMatchObject({ status: result === 'completed' ? 'completed' : 'incomplete', lastSeq: 1 })
+  expect(JSON.stringify(row)).not.toContain('private-error-fixture')
+  const attempt = await budget.getAttempt(id)
+  expect(attempt).toMatchObject({ userId: actor.userId, scopeId, provider: 'openai', model: 'gpt-6-luna' })
+  if (result === 'error') {
+    expect(row).toMatchObject({ error: { code: 'SEND_UNCERTAIN' } })
+    expect(attempt).toMatchObject({ state: 'reserved' })
+  } else {
+    expect(attempt).toMatchObject({ state: 'settled', costMicros: 6,
+      usage: { inputTokens: 12, outputTokens: 5, reasoningTokens: 3 } })
+    if (result === 'failed') expect(row).toMatchObject({ error: { code: 'GENERATION_FAILED' } })
+  }
+})
+
+test('Anthropic is selected only for its own authorized provider and turn scope', async () => {
+  const ref = await conversation()
+  budget = new ModelBudget(store, { anthropic: 3 * usd })
+  const wire = vi.fn<ModelWire>(async () => modelReply([
+    { type: 'message_start', message: { usage: { input_tokens: 11, output_tokens: 1 } } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 9 } },
+    { type: 'message_stop' },
+  ]))
+  const gateway = createCatalogTurnProvider(store, budget, () => settings('anthropic'), wire)
+  const worker = createGenerationWorker(store, gateway)
+  await write(pk(), 'MODEL#openai', goodGrant)
+  await write(scopePartition('other-user', scopeId), 'MODEL#anthropic', goodGrant)
+  await write(scopePartition(actor.userId, 'other-scope'), 'MODEL#anthropic', goodGrant)
+  await worker.runTurn(ref, randomUUID())
+  expect(wire).not.toHaveBeenCalled()
+  expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'blocked' })
+
+  await write(pk(), 'MODEL#anthropic', goodGrant)
+  const chat = createChat(store)
+  const c = await chat.createConversation(actor, scopeId, {})
+  const t = await chat.acceptTurn(actor, scopeId, c.conversationId, 'anthropic-turn', { text: 'Otro mensaje' })
+  const attemptId = randomUUID()
+  await worker.runTurn({ ...ref, turnId: t.turnId }, attemptId)
+  expect(wire).toHaveBeenCalledTimes(1)
+  expect(wire.mock.calls[0][0]).toMatchObject({ provider: 'anthropic', path: '/v1/messages' })
+  expect(await budget.getAttempt(attemptId)).toMatchObject({ state: 'settled', costMicros: 112 })
+})
+
+test.each([
+  { enabled: false }, { provider: 'unknown' }, { model: 'claude-sonnet-5-5' }, { maxOutputTokens: 15 },
+  { tariff: { ...candidateTariffs.openai, inputPerMillion: 100_000 } },
+])('invalid catalog configuration never reserves or sends (%j)', async override => {
+  await write(pk(), 'MODEL#openai', goodGrant)
+  budget = new ModelBudget(store, { openai: usd })
+  const wire = vi.fn<ModelWire>()
+  const ref = await conversation()
+  const id = randomUUID()
+  const worker = createGenerationWorker(store, createCatalogTurnProvider(store, budget, () => ({ ...settings(), ...override }), wire))
+  await worker.runTurn(ref, id)
+  expect(wire).not.toHaveBeenCalled()
+  expect(await budget.getAttempt(id)).toBeUndefined()
+  expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'blocked', lastSeq: 0 })
+})
+
+test('worker cancellation aborts the wire and keeps the quoted reservation', async () => {
+  await write(pk(), 'MODEL#openai', goodGrant)
+  await write(pk(), 'SCOPE', { actions: new Set(['turn:create', 'conversation:create', 'turn:run', 'turn:read', 'turn:cancel']) })
+  budget = new ModelBudget(store, { openai: usd })
+  const close = vi.fn()
+  const wire = vi.fn<ModelWire>(async () => new Response(new ReadableStream({
+    start(body) { body.enqueue(Buffer.from('data: ' + JSON.stringify(openAIText) + '\n\n')) },
+    cancel: close,
+  }), { headers: { 'content-type': 'text/event-stream' } }))
+  const ref = await conversation()
+  const id = randomUUID()
+  const worker = createGenerationWorker(store, createCatalogTurnProvider(store, budget, settings, wire), { pollMs: 10, timeoutMs: 5000 })
+  const running = worker.runTurn(ref, id)
+  try {
+    await vi.waitFor(async () => {
+      expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'running', lastSeq: 1 })
+    }, { timeout: 4000 })
+    await cancelTurn(store, actor, ref)
+  } finally {
+    await running
+  }
+  await worker.runTurn(ref, randomUUID())
+  expect(wire).toHaveBeenCalledTimes(1)
+  expect(wire.mock.calls[0][0].signal.aborted).toBe(true)
+  expect(close).toHaveBeenCalledTimes(1)
+  expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'cancelled', lastSeq: 1 })
+  expect(await budget.getAttempt(id)).toMatchObject({ state: 'reserved', maxCost: 210_048 })
+})
+
+test('catalog revalidates selection after reserving, crediting unsent attempts', async () => {
+  await write(pk(), 'MODEL#openai', goodGrant)
+  budget = new ModelBudget(store, { openai: usd })
+  const reserve = budget.reserveAttempt.bind(budget)
+  let enabled = true
+  vi.spyOn(budget, 'reserveAttempt').mockImplementation(async (...args) => {
+    const result = await reserve(...args)
+    enabled = false
+    return result
+  })
+  const wire = vi.fn<ModelWire>()
+  const ref = await conversation()
+  const attemptId = randomUUID()
+  const gateway = createCatalogTurnProvider(store, budget, () => ({ ...settings(), enabled }), wire)
+  await createGenerationWorker(store, gateway).runTurn(ref, attemptId)
+  expect(wire).not.toHaveBeenCalled()
+  expect(await budget.getAttempt(attemptId)).toMatchObject({ state: 'settled', costMicros: 0 })
+  expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'blocked' })
+})
+
+test.each([[0, 0], [12, 170]])('Claude refusal retains reported usage with %i output tokens', async (outputTokens, costMicros) => {
+  await write(pk(), 'MODEL#anthropic', goodGrant)
+  budget = new ModelBudget(store, { anthropic: 3 * usd })
+  const wire = vi.fn<ModelWire>(async () => modelReply([
+    { type: 'message_start', message: { usage: { input_tokens: 25, output_tokens: 0 } } },
+    { type: 'message_delta', delta: { stop_reason: 'refusal', stop_details: { category: 'general_harms' } },
+      usage: { output_tokens: outputTokens } },
+    { type: 'message_stop' },
+  ]))
+  const ref = await conversation()
+  const id = randomUUID()
+  const gateway = createCatalogTurnProvider(store, budget, () => settings('anthropic'), wire)
+  await createGenerationWorker(store, gateway).runTurn(ref, id)
+  expect(wire).toHaveBeenCalledTimes(1)
+  expect(await budget.getAttempt(id)).toMatchObject({ state: 'settled', costMicros, usage: { inputTokens: 25, outputTokens } })
+  expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'failed', lastSeq: 0 })
+})
+
+test('Luna pricing crosses the documented threshold after 272000 input tokens', () => {
+  const input = (inputTokens: number) => ({ inputTokens, outputTokens: 8, reasoningTokens: 0, toolTokens: 0, toolCalls: 0 })
+  expect(costMicros(candidateTariffs.openai, input(272_000))).toBe(27_204)
+  expect(costMicros(candidateTariffs.openai, input(272_001))).toBe(54_407)
 })
