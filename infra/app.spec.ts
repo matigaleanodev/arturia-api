@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 
-test('foundation_synthesizes_without_aws_resources', () => {
+test('stack_synthesizes_cognito_without_aws_lookups', () => {
   const outdir = mkdtempSync(join(tmpdir(), 'arturia-cdk-'))
   try {
     execFileSync(process.execPath, ['infra/bin/app.ts'], {
@@ -16,7 +16,12 @@ test('foundation_synthesizes_without_aws_resources', () => {
     })
     const template = JSON.parse(readFileSync(join(outdir, 'Arturia.template.json'), 'utf8'))
     const assembly = JSON.parse(readFileSync(join(outdir, 'manifest.json'), 'utf8'))
-    expect(Object.keys(template.Resources ?? {})).toEqual([])
+    expect(Object.values(template.Resources ?? {}).map((resource) => (resource as { Type: string }).Type).sort()).toEqual([
+      'AWS::Cognito::UserPool',
+      'AWS::Cognito::UserPoolClient',
+      'AWS::Cognito::UserPoolDomain',
+      'AWS::Cognito::UserPoolResourceServer',
+    ])
     expect(assembly.missing ?? []).toEqual([])
     expect(assembly.artifacts.Arturia.environment).toBe('aws://unknown-account/unknown-region')
   } finally {

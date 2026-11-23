@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "aws-cdk-lib": "2.278.0",
+    "aws-jwt-verify": "5.2.1",
     "constructs": "10.8.1"
   },
   "packageManager": "npm@11.19.1"
