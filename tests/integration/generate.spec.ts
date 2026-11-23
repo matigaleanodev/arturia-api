@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { text } from 'node:stream/consumers'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
@@ -10,6 +11,7 @@ import { chatHttp } from '../../src/chat/turns.http.js'
 import { createChat } from '../../src/chat/turns.js'
 import { createGenerationWorker } from '../../src/chat/generate.worker.js'
 import { readBlocks } from '../../src/chat/blocks.js'
+import { createStreamReader, dynamoStreamSource } from '../../src/chat/stream.reader.js'
 import { SimulatedProvider } from '../../src/models/simulated.js'
 import type { Provider } from '../../src/models/provider.js'
 import { integrationDatabase } from '../support/dynamodb.js'
@@ -253,4 +255,61 @@ test.each([false, true])('deadline_during_slow_policy_read_partial_%s', async pa
     ...(partial && { result: { text: 'Primero' } }), error: { code: 'GENERATION_TIMEOUT' },
   })
   expect(abortedDuringRead).toBe(true)
+})
+
+test('connection_never_calls_provider', async () => {
+  await grant([...actions, 'turn:stream'])
+  const provider = new SimulatedProvider(['Primero', ' segundo'])
+  const calls = vi.spyOn(provider, 'stream')
+  await worker(provider).runTurn(ref, 'fixture-only-attempt')
+  const { readStream } = createStreamReader(dynamoStreamSource(store), { batchSize: 1 })
+  const first = await text(readStream(actor, scopeId, ref.turnId, 0))
+  const resumed = await text(readStream(actor, scopeId, ref.turnId, 1))
+  expect(first).toContain('"seq":1')
+  expect(resumed).not.toContain('"seq":1')
+  expect(resumed).toContain('"seq":2')
+  expect(resumed).toContain('"status":"completed","lastSeq":2')
+  expect(calls).toHaveBeenCalledTimes(1)
+  const fresh = readStream(actor, scopeId, ref.turnId, 0)
+  expect((await fresh.next()).value).toContain('"seq":1')
+  await grant(actions)
+  expect(await fresh.next()).toMatchObject({ done: true })
+  await expect(readStream({ ...actor, userId: 'foreign' }, scopeId, ref.turnId, 0).next()).rejects.toMatchObject({ status: 403 })
+})
+
+test('disconnect_and_resume_preserve_the_running_attempt', async () => {
+  await grant([...actions, 'turn:stream'])
+  const paused = Promise.withResolvers<AbortSignal>()
+  const release = Promise.withResolvers<void>()
+  const provider: Provider = { stream: vi.fn(async function* ({ signal }) {
+    yield { type: 'text' as const, text: 'Primero' }
+    paused.resolve(signal)
+    await release.promise
+    yield { type: 'text' as const, text: ' segundo' }
+  }) }
+  const running = worker(provider).runTurn(ref, 'fixture-disconnect-attempt')
+  const controller = new AbortController()
+  const { readStream } = createStreamReader(dynamoStreamSource(store), { batchSize: 1 })
+  const connection = readStream(actor, scopeId, ref.turnId, 0, controller.signal)
+  try {
+    const generationSignal = await Promise.race([
+      paused.promise,
+      running.then(() => { throw new Error('The generation finished before the client disconnected') }),
+    ])
+    expect((await connection.next()).value).toContain('"seq":1')
+    controller.abort()
+    expect(await connection.next()).toMatchObject({ done: true })
+    expect(generationSignal.aborted).toBe(false)
+    expect(await snapshot()).toMatchObject({ status: 'running', lastSeq: 1 })
+  } finally {
+    controller.abort()
+    release.resolve()
+    await connection.return(undefined)
+    await running
+  }
+  const resumed = await text(readStream(actor, scopeId, ref.turnId, 1))
+  expect(resumed).not.toContain('"seq":1')
+  expect(resumed).toContain('"seq":2')
+  expect(resumed).toContain('"status":"completed","lastSeq":2')
+  expect(provider.stream).toHaveBeenCalledTimes(1)
 })

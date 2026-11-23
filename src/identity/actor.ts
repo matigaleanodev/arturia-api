@@ -36,7 +36,7 @@ interface CognitoIdentityConfig {
   readonly clientId: string
 }
 
-function permitsAuthentication(account: AccountState | undefined, authTime: number): boolean {
+export function permitsAuthentication(account: AccountState | undefined, authTime: number): boolean {
   if (account?.status !== 'active' || account.mfaVerifiedAt === undefined) return false
   return Number.isSafeInteger(account.mfaVerifiedAt) && account.mfaVerifiedAt >= 0 &&
     Number.isSafeInteger(authTime) && authTime > account.mfaVerifiedAt

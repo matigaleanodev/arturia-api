@@ -11,6 +11,10 @@ Backend for Arturia, a personal assistant with conversations organized by user a
 
 Conversation titles and message text each accept up to 393,216 UTF-8 bytes. Scope, conversation, and turn IDs in paths accept up to 256 UTF-8 bytes each. Oversized values return HTTP 400 with code `INVALID_REQUEST`.
 
+The turn events endpoint accepts an optional nonnegative integer `after` cursor. It reads persisted blocks, rechecks the current session and scope grant before each batch, and closes after the terminal status, revocation, or the connection time limit. Reconnect with the last text sequence received. Heartbeat comments carry no data.
+
+`npm run bundle:stream` builds the Node.js 24 delivery handler in `dist/stream/`. Pass that directory to `lambda.Code.fromAsset` when composing `addChatStream` with the chat table, Cognito pool and browser client ID. The construct exposes its Regional REST API for additional routes. Delivery requires an existing Arturia session and has independent reserved concurrency.
+
 ## Local development
 
 Use the Node.js version in `.nvmrc` and install dependencies with `npm ci`.

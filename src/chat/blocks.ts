@@ -9,7 +9,7 @@ export const blockKey = (turnId: string, seq: number) => 'BLOCK#' + turnId + '#'
 
 // Internal reader. The caller supplies the authorized snapshot's lastSeq and
 // rechecks permission before emitting the batch. A blocked snapshot has lastSeq 0.
-export async function readBlocks(store: ChatStore, ref: TurnReference, after: number, lastSeq: number, limit: number) {
+export async function readBlocks(store: ChatStore, ref: TurnReference, after: number, lastSeq: number, limit: number, signal?: AbortSignal) {
   if (![after, lastSeq, limit].every(Number.isSafeInteger) || after < 0 || lastSeq < 0 || limit < 1) {
     throw new RangeError('Invalid block range')
   }
@@ -19,7 +19,7 @@ export async function readBlocks(store: ChatStore, ref: TurnReference, after: nu
     KeyConditionExpression: 'pk = :pk AND sk BETWEEN :start AND :end',
     ExpressionAttributeValues: { ':pk': scopePartition(ref.userId, ref.scopeId),
       ':start': blockKey(ref.turnId, after + 1), ':end': blockKey(ref.turnId, lastSeq) },
-  }))
+  }), { abortSignal: signal })
   return (page.Items ?? []).map(row => ({ type: 'text' as const, turnId: ref.turnId, seq: row.seq as number, text: row.text as string }))
 }
 

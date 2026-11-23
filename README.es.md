@@ -11,6 +11,10 @@ Backend de Arturia, un asistente personal con conversaciones organizadas por usu
 
 Los títulos de conversación y los textos de mensajes admiten hasta 393.216 bytes UTF-8 cada uno. Los identificadores de ámbito, conversación y turno en las rutas admiten hasta 256 bytes UTF-8 cada uno. Los valores que exceden estos límites reciben HTTP 400 con código `INVALID_REQUEST`.
 
+El endpoint de eventos del turno admite el cursor opcional `after`, un entero mayor o igual que cero. Lee bloques persistidos, comprueba la sesión y el permiso de ámbito antes de cada lote y cierra tras el estado terminal, la revocación o el límite de tiempo de la conexión. Para reanudar, enviá la última secuencia de texto recibida. Los comentarios de latido carecen de datos.
+
+`npm run bundle:stream` genera el handler de entrega para Node.js 24 en `dist/stream/`. Pasá ese directorio a `lambda.Code.fromAsset` al componer `addChatStream` con la tabla de chat, el pool de Cognito y el ID del cliente web. El construct expone su REST API regional para agregar rutas. La entrega requiere una sesión de Arturia existente y tiene concurrencia reservada independiente.
+
 ## Desarrollo local
 
 Usá la versión de Node.js de `.nvmrc` e instalá las dependencias con `npm ci`.
