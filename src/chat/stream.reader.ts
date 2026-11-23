@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { setTimeout as sleep } from 'node:timers/promises'
-import { TransactionCanceledException } from '@aws-sdk/client-dynamodb'
 import { TransactGetCommand } from '@aws-sdk/lib-dynamodb'
 import { permitsAuthentication, type Actor } from '../identity/actor.js'
 import { readBlocks } from './blocks.js'
@@ -13,24 +12,6 @@ type Snapshot = { status: TurnStatus; lastSeq: number }
 export interface StreamSource {
   snapshot(actor: Actor, ref: TurnReference, signal: AbortSignal): Promise<Snapshot>
   blocks(ref: TurnReference, after: number, lastSeq: number, limit: number, signal: AbortSignal): ReturnType<typeof readBlocks>
-}
-
-// A concurrent worker write can cancel the whole read. Retry only that transient conflict.
-const conflictDelaysMs = [20, 40, 80]
-
-async function readSnapshot(store: ChatStore, command: TransactGetCommand, signal: AbortSignal) {
-  for (let attempt = 0; ; attempt++) {
-    signal.throwIfAborted()
-    try {
-      return await store.db.send(command, { abortSignal: signal })
-    } catch (error) {
-      const delayMs = conflictDelaysMs[attempt]
-      const reasons = error instanceof TransactionCanceledException ? error.CancellationReasons : undefined
-      if (delayMs === undefined || !reasons?.some(reason => reason.Code === 'TransactionConflict') ||
-          reasons.some(reason => reason.Code !== 'None' && reason.Code !== 'TransactionConflict')) throw error
-      await sleep(delayMs, undefined, { signal })
-    }
-  }
 }
 
 export function dynamoStreamSource(store: ChatStore): StreamSource {
@@ -44,7 +25,7 @@ export function dynamoStreamSource(store: ChatStore): StreamSource {
           ExpressionAttributeNames: Object.fromEntries(attributes.map(name => ['#' + name, name])) },
       })
       // One serializable read binds the visible high-water mark to the current grant and session.
-      const result = await readSnapshot(store, new TransactGetCommand({ TransactItems: [
+      const result = await store.transactRead(new TransactGetCommand({ TransactItems: [
         get(owner, 'ACCOUNT', ['status', 'mfaVerifiedAt']), get(owner, 'SESSION#' + actor.sessionId, ['status', 'authTime']),
         get(pk, 'SCOPE', ['actions']), get(pk, 'TURN#' + ref.turnId, ['status', 'lastSeq']),
       ] }), signal)

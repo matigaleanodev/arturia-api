@@ -15,6 +15,14 @@ The turn events endpoint accepts an optional nonnegative integer `after` cursor.
 
 `npm run bundle:stream` builds the Node.js 24 delivery handler in `dist/stream/`. Pass that directory to `lambda.Code.fromAsset` when composing `addChatStream` with the chat table, Cognito pool and browser client ID. The construct exposes its Regional REST API for additional routes. Delivery requires an existing Arturia session and has independent reserved concurrency.
 
+## Model egress and accounting
+
+Billable workers use `dispatchModel`. Chat uses `createTurnDispatcher` to read the current account, session, scope, turn lease, message and source grants in one DynamoDB snapshot. Each provider needs an enabled scope grant with explicit origins, categories and integrations. Derived sources also require current source access. An unresolved source, detected secret or identified banking material blocks the request.
+
+One DynamoDB table owns the deployment budget. Each attempt reserves against both the US$10 UTC calendar-month ceiling and the configured provider ceiling. Amounts use integer microdollars (1 USD = 1,000,000 µUSD). Token rates use µUSD per million tokens, with one upward rounding after summing all token costs. The transport supplies a verified upper bound for the entire encoded input and enforces limits for visible output, reasoning, tool arguments and separately billed tool calls. Token buckets are disjoint. Missing or expired prices disable new sends.
+
+The ledger records the applied tariff, provider, model, operation, usage and cost. Redelivery cannot reuse a reservation. A confirmed final usage report or invoice reconciles the original month exactly once. A timeout, interrupted stream or missing report retains the full reservation for reconciliation. Each subsequent authorized attempt needs a new ID. A transport must disable implicit retries.
+
 ## Local development
 
 Use the Node.js version in `.nvmrc` and install dependencies with `npm ci`.

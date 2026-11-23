@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { UncertainSend, type Provider, type ProviderEvent } from '../models/provider.js'
+import { ModelPolicyDenied, UncertainSend, type Provider, type ProviderEvent } from '../models/provider.js'
 import { ChatStore, turnKey } from './turns.store.js'
 import { ChatError, type TurnReference } from './turns.types.js'
 import { active, blockTurn, changeTurn, GenerationAttempt, publicFault, readRow, type FaultCode } from './generation.store.js'
@@ -15,11 +15,12 @@ class LeaseLost extends Error {}
 const fenced = (won: boolean) => { if (!won) throw new LeaseLost() }
 const isDenied = (err: unknown) => err instanceof ChatError && err.status === 403
 
-type Next = { kind: 'event'; event: IteratorResult<ProviderEvent> } | { kind: 'error'; code: FaultCode }
+type Next = { kind: 'event'; event: IteratorResult<ProviderEvent> } | { kind: 'error'; code: FaultCode } | { kind: 'denied'; error: ModelPolicyDenied }
 function next(iterator: AsyncIterator<ProviderEvent>): Promise<Next> {
   return Promise.resolve().then(() => iterator.next()).then(
     event => ({ kind: 'event', event }),
-    error => ({ kind: 'error', code: error instanceof UncertainSend ? 'SEND_UNCERTAIN' : 'GENERATION_FAILED' }),
+    error => error instanceof ModelPolicyDenied ? { kind: 'denied', error } :
+      { kind: 'error', code: error instanceof UncertainSend ? 'SEND_UNCERTAIN' : 'GENERATION_FAILED' },
   )
 }
 
@@ -67,8 +68,12 @@ async function generate(attempt: GenerationAttempt, provider: Provider, timeoutM
   }
   try {
     try {
-      iterator = provider.stream({ attemptId: attempt.attemptId, text: input.text, signal: controller.signal })[Symbol.asyncIterator]()
-    } catch (err) { fault = err instanceof UncertainSend ? 'SEND_UNCERTAIN' : 'GENERATION_FAILED' }
+      iterator = provider.stream({ ref, leaseId: attempt.leaseId, sessionId: attempt.row.sessionId,
+        messageSk: attempt.row.messageSk, attemptId: attempt.attemptId, text: input.text, signal: controller.signal })[Symbol.asyncIterator]()
+    } catch (err) {
+      if (err instanceof ModelPolicyDenied) throw err
+      fault = err instanceof UncertainSend ? 'SEND_UNCERTAIN' : 'GENERATION_FAILED'
+    }
     if (iterator) {
       let pollAt = performance.now() + pollMs
       let pending: Promise<Next> | undefined
@@ -88,6 +93,7 @@ async function generate(attempt: GenerationAttempt, provider: Provider, timeoutM
         if (result === 'tick') continue
         if (expired()) break
         pending = undefined
+        if (result.kind === 'denied') throw result.error
         if (result.kind === 'error') { fault = result.code; break }
         if (result.event.done) break
         const chunk = result.event.value.text
@@ -155,7 +161,8 @@ export function createGenerationWorker(store: ChatStore, provider: Provider, opt
         }
         return 'done'
       } catch (error) {
-        if (isDenied(error)) await blockTurn(store, ref, owned)
+        if (error instanceof ModelPolicyDenied) await blockTurn(store, ref, owned, 'MODEL_POLICY_DENIED')
+        else if (isDenied(error)) await blockTurn(store, ref, owned)
         else if (!(error instanceof LeaseLost)) throw error
         const current = await readRow(store, ref)
         return current && active(current.status) ? 'retry' : 'done'

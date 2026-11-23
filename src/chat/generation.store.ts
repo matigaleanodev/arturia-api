@@ -62,6 +62,7 @@ const messages = {
   SEND_UNCERTAIN: 'No se pudo confirmar el envío al proveedor.',
   GENERATION_FAILED: 'No se pudo completar la generación.',
   GENERATION_TIMEOUT: 'Se agotó el tiempo de generación.',
+  MODEL_POLICY_DENIED: 'La política de generación impidió el envío.',
   PERMISSION_REVOKED: 'El acceso ya no está permitido.',
 }
 export type FaultCode = keyof typeof messages
@@ -69,13 +70,13 @@ export const publicFault = (code: FaultCode) => ({ code, message: messages[code]
 
 // Only suppresses the visible result. This write must work after revocation.
 // Fence against the observed generation; cancellation or a newer lease wins.
-export async function blockTurn(store: ChatStore, ref: TurnReference, row: TurnRow) {
+export async function blockTurn(store: ChatStore, ref: TurnReference, row: TurnRow, code: 'PERMISSION_REVOKED' | 'MODEL_POLICY_DENIED' = 'PERMISSION_REVOKED') {
   const lease = row.status === 'running'
   return changeTurn(store, ref, {
     ConditionExpression: '#status = :previous' + (lease ? ' AND leaseId = :lease' : ''),
     UpdateExpression: 'SET #status = :blocked, lastSeq = :zero, #error = :fault REMOVE #result',
     ExpressionAttributeValues: { ':previous': row.status, ':blocked': 'blocked', ':zero': 0,
-      ':fault': publicFault('PERMISSION_REVOKED'), ...(lease && { ':lease': row.leaseId }) },
+      ':fault': publicFault(code), ...(lease && { ':lease': row.leaseId }) },
   })
 }
 

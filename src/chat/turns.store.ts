@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { createHash, randomUUID } from 'node:crypto'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { TransactionCanceledException, ConditionalCheckFailedException, type DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand,
+import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactGetCommand, TransactWriteCommand, UpdateCommand,
   type QueryCommandInput, type TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb'
 import type { Actor, IdentityStore, SessionState } from '../identity/actor.js'
 import type { Action, PolicyStore } from '../identity/policy.js'
@@ -29,6 +30,22 @@ export class ChatStore implements IdentityStore, PolicyStore {
       TableName: this.tableName, Key: { pk, sk }, ConsistentRead: true,
     }))
     return Item
+  }
+
+  // A concurrent write can cancel the snapshot. Retry only that transient conflict.
+  async transactRead(command: TransactGetCommand, signal: AbortSignal) {
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted()
+      try {
+        return await this.db.send(command, { abortSignal: signal })
+      } catch (error) {
+        const delayMs = [20, 40, 80][attempt]
+        const reasons = error instanceof TransactionCanceledException ? error.CancellationReasons : undefined
+        if (delayMs === undefined || !reasons?.some(reason => reason.Code === 'TransactionConflict') ||
+            reasons.some(reason => reason.Code !== 'None' && reason.Code !== 'TransactionConflict')) throw error
+        await sleep(delayMs, undefined, { signal })
+      }
+    }
   }
 
   private async *query(pk: string, prefix: string, filter?: 'pending') {
