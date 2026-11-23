@@ -15,7 +15,6 @@
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "13.1.0",
-    "@aws-sdk/client-dynamodb": "3.1175.0",
     "@types/node": "24.19.2",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
@@ -29,6 +28,9 @@
     "node": "24.22.3"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1175.0",
+    "@aws-sdk/client-sqs": "3.1175.0",
+    "@aws-sdk/lib-dynamodb": "3.1175.0",
     "aws-cdk-lib": "2.278.0",
     "aws-jwt-verify": "5.2.1",
     "constructs": "10.8.1"
