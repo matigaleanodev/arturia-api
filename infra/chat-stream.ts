@@ -12,16 +12,19 @@ interface ChatStreamProps {
   clientId: string
   code: lambda.Code
   concurrency?: number
+  /** Predefined execution role. When it is immutable, its grants live outside this stack. */
+  role?: iam.IRole
+  functionName?: string
 }
 
-export function addChatStream(scope: Construct, { table, pool, clientId, code, concurrency = 4 }: ChatStreamProps) {
+export function addChatStream(scope: Construct, { table, pool, clientId, code, concurrency = 4, role, functionName }: ChatStreamProps) {
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new RangeError('Invalid SSE concurrency')
   const api = new gateway.RestApi(scope, 'RegionalApi', {
     endpointConfiguration: { types: [gateway.EndpointType.REGIONAL] }, cloudWatchRole: false,
   })
   const reader = new lambda.Function(scope, 'StreamDelivery', {
     runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code, timeout: Duration.seconds(28),
-    memorySize: 256, reservedConcurrentExecutions: concurrency,
+    memorySize: 256, reservedConcurrentExecutions: concurrency, role, functionName,
     environment: { ARTURIA_TABLE_NAME: table.tableName, ARTURIA_CLIENT_ID: clientId },
   })
   reader.addToRolePolicy(new iam.PolicyStatement({

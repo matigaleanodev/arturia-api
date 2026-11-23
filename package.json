@@ -9,11 +9,13 @@
     "verify": "node scripts/verify.mjs",
     "verify:integrated": "exec node scripts/verify-integrated.mjs",
     "verify:local": "node scripts/verify.mjs --local",
-    "build": "tsc --project tsconfig.json && tsc --project tsconfig.build.json && npm run bundle:stream",
+    "build": "tsc --project tsconfig.json && tsc --project tsconfig.build.json && npm run bundle",
     "test": "npm run test:contract && npm run test:unit && npm run test:infra",
     "test:infra": "vitest run --project infra",
     "synth": "cdk synth --no-lookups --no-telemetry --no-notices",
-    "bundle:stream": "rolldown src/chat/stream.lambda.ts --platform node --format cjs --no-codeSplitting --file dist/stream/index.cjs"
+    "bundle": "node scripts/bundle.mjs",
+    "synth:pilot": "npm run bundle && cdk synth --no-lookups --no-telemetry --no-notices --output cdk.pilot.out -c arturia:target=pilot",
+    "synth:foundation": "cdk synth --no-lookups --no-telemetry --no-notices --app \"node infra/foundation-app.ts\" --output cdk.foundation.out"
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "13.1.0",

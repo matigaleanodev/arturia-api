@@ -54,4 +54,5 @@ export function addIdentity(stack: Stack) {
   new CfnOutput(stack, 'UserPoolId', { value: userPool.userPoolId })
   new CfnOutput(stack, 'BrowserClientId', { value: client.userPoolClientId })
   new CfnOutput(stack, 'HostedLoginUrl', { value: domain.baseUrl() })
+  return { userPool, client }
 }

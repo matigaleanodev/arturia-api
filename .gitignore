@@ -2,6 +2,8 @@ node_modules/
 dist/
 coverage/
 cdk.out/
+cdk.pilot.out/
+cdk.foundation.out/
 cdk.context.json
 *.log
 *.tsbuildinfo

@@ -5,18 +5,26 @@ import { Duration, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambd
 import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
 
-export function addOutbox(scope: Construct, relay: lambda.Function) {
+export interface OutboxNames {
+  readonly table: string
+  readonly turnQueue: string
+  readonly turnDeadLetters: string
+  readonly relayDeadLetters: string
+}
+
+export function addOutbox(scope: Construct, relay: lambda.Function, names?: OutboxNames) {
   const table = new dynamodb.Table(scope, 'ChatTable', {
+    tableName: names?.table,
     partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
     sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
     billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     stream: dynamodb.StreamViewType.KEYS_ONLY,
   })
-  const workerDlq = new sqs.Queue(scope, 'TurnDeadLetters', { fifo: true, retentionPeriod: Duration.days(14) })
+  const workerDlq = new sqs.Queue(scope, 'TurnDeadLetters', { queueName: names?.turnDeadLetters, fifo: true, retentionPeriod: Duration.days(14) })
   const turnQueue = new sqs.Queue(scope, 'TurnQueue', {
-    fifo: true, deadLetterQueue: { queue: workerDlq, maxReceiveCount: 5 },
+    queueName: names?.turnQueue, fifo: true, deadLetterQueue: { queue: workerDlq, maxReceiveCount: 5 },
   })
-  const streamDlq = new sqs.Queue(scope, 'RelayDeadLetters', { retentionPeriod: Duration.days(14) })
+  const streamDlq = new sqs.Queue(scope, 'RelayDeadLetters', { queueName: names?.relayDeadLetters, retentionPeriod: Duration.days(14) })
   relay.addEnvironment('ARTURIA_TABLE_NAME', table.tableName)
   relay.addEnvironment('ARTURIA_TURN_QUEUE_URL', turnQueue.queueUrl)
   relay.addToRolePolicy(new iam.PolicyStatement({

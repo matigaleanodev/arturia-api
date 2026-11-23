@@ -13,7 +13,18 @@ Conversation titles and message text each accept up to 393,216 UTF-8 bytes. Scop
 
 The turn events endpoint accepts an optional nonnegative integer `after` cursor. It reads persisted blocks, rechecks the current session and scope grant before each batch, and closes after the terminal status, revocation, or the connection time limit. Reconnect with the last text sequence received. Heartbeat comments carry no data.
 
-`npm run bundle:stream` builds the Node.js 24 delivery handler in `dist/stream/`. Pass that directory to `lambda.Code.fromAsset` when composing `addChatStream` with the chat table, Cognito pool and browser client ID. The construct exposes its Regional REST API for additional routes. Delivery requires an existing Arturia session and has independent reserved concurrency.
+`addChatStream` composes the delivery handler with the chat table, Cognito pool and browser client ID. The construct exposes its Regional REST API for additional routes. Delivery requires an existing Arturia session and has independent reserved concurrency.
+
+## Infrastructure
+
+`npm run bundle` builds one self-contained Node.js 24 bundle per Lambda handler in `dist/bundles/<name>/index.cjs`. `BUNDLES` in `infra/delivery.ts` lists the entry points, which must live in `src/`.
+
+Deployment is split into two stacks and needs no CDK bootstrap:
+
+- **Foundation** (`infra/foundation-app.ts`, `arturia-foundation`): a private, versioned, encrypted artifact bucket with TLS enforced and a `Retain` policy, plus the pilot's predefined roles. It has no assets and its template is account-agnostic. It requires an administrator and the external permissions boundary `arturia-pilot-boundary`, whose document is `boundaryPolicy()`. The roles cannot exceed it.
+- **Pilot** (`infra/pilot.ts`, `arturia-pilot`): the application. `CliCredentialsStackSynthesizer` uploads its assets to the foundation bucket under the `arturia-pilot/` prefix. The stack imports the foundation roles as immutable and creates no IAM resources. It is deployed with the foundation's CloudFormation role (`--role-arn`). `operatorPolicy()` lists the permissions the deploying principal needs.
+
+`infra/delivery.ts` holds fixed resource names and the minimal policy of every role. It contains no account IDs: ARNs are built from CloudFormation pseudo parameters or from values supplied when deploying.
 
 ## Model egress and accounting
 
@@ -33,7 +44,10 @@ Use the Node.js version in `.nvmrc` and install dependencies with `npm ci`.
 | `npm run test:integration` | Run persistence tests with Docker and Docker Compose. |
 | `npm run verify:local` | Run verification and the local persistence suite. |
 | `ARTURIA_WEB_DIR=../arturia npm run verify:integrated` | Run the Angular + API chat scenarios with Chromium and DynamoDB Local on Linux. |
-| `npm run synth` | Synthesize the CDK stack locally into `cdk.out/` with AWS lookups disabled. |
+| `npm run bundle` | Build the Lambda bundles into `dist/bundles/`. |
+| `npm run synth` | Test synthesis into `cdk.out/`: synthetic account, placeholder bundles, stack `arturia-pilot-synthetic` and output `SyntheticSynth=true`. Not deployable. |
+| `npm run synth:foundation` | Synthesize the foundation into `cdk.foundation.out/`. |
+| `ARTURIA_WEB_DIR=../arturia npm run synth:pilot -- -c arturia:account=<id> -c arturia:region=<region>` | Build the bundles and synthesize the deployable pilot into `cdk.pilot.out/`. Fails without the account, region or web checkout. |
 
 Integration tests start an isolated DynamoDB Local instance on a temporary loopback port with synthetic credentials. Docker may download the pinned image on first use. The suite removes its container, in-memory data, and network on exit. Each execution gets its own table. To select an integration file or scenario, use `npm run test:integration -- dynamodb` or `npm run test:integration -- -t local_dynamodb_conditional_write`.
 

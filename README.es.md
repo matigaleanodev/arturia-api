@@ -13,7 +13,18 @@ Los títulos de conversación y los textos de mensajes admiten hasta 393.216 byt
 
 El endpoint de eventos del turno admite el cursor opcional `after`, un entero mayor o igual que cero. Lee bloques persistidos, comprueba la sesión y el permiso de ámbito antes de cada lote y cierra tras el estado terminal, la revocación o el límite de tiempo de la conexión. Para reanudar, enviá la última secuencia de texto recibida. Los comentarios de latido carecen de datos.
 
-`npm run bundle:stream` genera el handler de entrega para Node.js 24 en `dist/stream/`. Pasá ese directorio a `lambda.Code.fromAsset` al componer `addChatStream` con la tabla de chat, el pool de Cognito y el ID del cliente web. El construct expone su REST API regional para agregar rutas. La entrega requiere una sesión de Arturia existente y tiene concurrencia reservada independiente.
+`addChatStream` compone el handler de entrega con la tabla de chat, el pool de Cognito y el ID del cliente web. El construct expone su REST API regional para agregar rutas. La entrega requiere una sesión de Arturia existente y tiene concurrencia reservada independiente.
+
+## Infraestructura
+
+`npm run bundle` genera un bundle autocontenido para Node.js 24 por cada handler Lambda en `dist/bundles/<nombre>/index.cjs`. `BUNDLES` en `infra/delivery.ts` enumera los puntos de entrada, que deben estar en `src/`.
+
+El despliegue se divide en dos stacks y no requiere bootstrap de CDK:
+
+- **Fundación** (`infra/foundation-app.ts`, `arturia-foundation`): bucket de artefactos privado, versionado, cifrado, con TLS obligatorio y política `Retain`, más los roles predefinidos del piloto. No tiene assets y su plantilla no depende de la cuenta. Requiere un administrador y la boundary externa `arturia-pilot-boundary`, cuyo documento es `boundaryPolicy()`. Los roles no pueden excederla.
+- **Piloto** (`infra/pilot.ts`, `arturia-pilot`): la aplicación. `CliCredentialsStackSynthesizer` sube sus assets al bucket de la fundación con el prefijo `arturia-pilot/`. El stack importa los roles de la fundación como inmutables y no crea recursos IAM. Se despliega con el rol de CloudFormation de la fundación (`--role-arn`). `operatorPolicy()` enumera los permisos que necesita el principal que despliega.
+
+`infra/delivery.ts` contiene los nombres fijos de los recursos y la política mínima de cada rol. No incluye IDs de cuenta: los ARN se construyen con pseudoparámetros de CloudFormation o con valores provistos al desplegar.
 
 ## Envíos a modelos y presupuesto
 
@@ -33,7 +44,10 @@ Usá la versión de Node.js de `.nvmrc` e instalá las dependencias con `npm ci`
 | `npm run test:integration` | Ejecuta pruebas de persistencia con Docker y Docker Compose. |
 | `npm run verify:local` | Ejecuta la verificación y la suite de persistencia local. |
 | `ARTURIA_WEB_DIR=../arturia npm run verify:integrated` | Ejecuta los escenarios de chat de Angular y la API con Chromium y DynamoDB Local en Linux. |
-| `npm run synth` | Sintetiza el stack CDK en `cdk.out/` con los lookups de AWS desactivados. |
+| `npm run bundle` | Genera los bundles Lambda en `dist/bundles/`. |
+| `npm run synth` | Síntesis de prueba en `cdk.out/`: cuenta sintética, bundles de reemplazo, stack `arturia-pilot-synthetic` y salida `SyntheticSynth=true`. No es desplegable. |
+| `npm run synth:foundation` | Sintetiza la fundación en `cdk.foundation.out/`. |
+| `ARTURIA_WEB_DIR=../arturia npm run synth:pilot -- -c arturia:account=<id> -c arturia:region=<región>` | Genera los bundles y sintetiza el piloto desplegable en `cdk.pilot.out/`. Falla sin la cuenta, la región o el checkout web. |
 
 Las pruebas de integración inician una instancia aislada de DynamoDB Local en un puerto local temporal, con credenciales sintéticas. Docker puede descargar la imagen fijada en el primer uso. La suite elimina el contenedor, los datos en memoria y la red al terminar. Cada ejecución tiene su propia tabla. Para elegir un archivo o escenario de integración, usá `npm run test:integration -- dynamodb` o `npm run test:integration -- -t local_dynamodb_conditional_write`.
 
