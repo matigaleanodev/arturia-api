@@ -99,6 +99,7 @@ test('openapi_documents_scoped_chat_and_read_only_stream', async () => {
     [conversation, 'get', '200'],
     [conversation + '/turns', 'post', '202'],
     [turn, 'get', '200'],
+    [turn + '/cancel', 'post', '200'],
     [turn + '/events', 'get', '200'],
   ]
   for (const [path, method, success] of operations) {
@@ -194,7 +195,7 @@ test('http_fixtures_match_documented_operations', () => {
     assert.equal(snapshot.scopeId, scopeId)
     assert.equal(snapshot.conversationId, conversationId)
   }
-  verify(ajv, { $ref: contractId + '#/components/schemas/TurnSnapshot' }, fixture.cancelTurn, 'cancelTurn')
+  verifyResponse(openapi, ajv, turn + '/cancel', 'post', '200', fixture.cancelTurn, 'cancelTurn')
   assert.equal(fixture.cancelTurn.status, 'cancelled')
   assert.deepEqual(fixture.replayTurn.headers, fixture.acceptTurn.headers)
   assert.deepEqual(fixture.replayTurn.request, fixture.acceptTurn.request)

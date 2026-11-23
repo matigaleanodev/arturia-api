@@ -100,7 +100,7 @@ export class ChatStore implements IdentityStore, PolicyStore {
 
   async createConversation(actor: Actor, scopeId: string, input: ConversationInput): Promise<ConversationSummary> {
     const summary = { ...input, scopeId, conversationId: randomUUID(), createdAt: this.now().toISOString() }
-    await this.transact([
+    await this.transactGuarded([
       ...await this.writeGuards(actor, scopeId, 'conversation:create'),
       { Put: { TableName: this.tableName, Item: { pk: scopePartition(actor.userId, scopeId),
         sk: 'CONVERSATION#' + summary.conversationId, summary, turnCount: 0 }, ConditionExpression: 'attribute_not_exists(pk)' } },
@@ -129,7 +129,7 @@ export class ChatStore implements IdentityStore, PolicyStore {
     return { ...row.summary as ConversationSummary, turns }
   }
 
-  private async transact(writes: Writes) {
+  async transactGuarded(writes: Writes) {
     try {
       await this.db.send(new TransactWriteCommand({ TransactItems: writes }))
     } catch (error) {
@@ -162,7 +162,7 @@ export class ChatStore implements IdentityStore, PolicyStore {
       const messageSk = messagePrefix(conversationId) + String(ordinal).padStart(16, '0')
       const snapshot: TurnSnapshot = { scopeId, conversationId, turnId, status: 'queued', lastSeq: 0 }
       try {
-        await this.transact([
+        await this.transactGuarded([
           ...guards,
           { Update: { TableName, Key: { pk, sk: conversationSk }, UpdateExpression: 'SET turnCount = :next',
             ConditionExpression: 'turnCount = :previous',

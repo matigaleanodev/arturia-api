@@ -9,6 +9,7 @@ const resourceForAction = {
   'conversation:read': 'conversation',
   'turn:create': 'conversation',
   'turn:read': 'turn',
+  'turn:run': 'turn',
   'turn:stream': 'turn',
   'turn:cancel': 'turn',
 } as const

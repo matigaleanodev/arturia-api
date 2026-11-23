@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { cancelTurn } from './cancel.js'
 import type { Actor } from '../identity/actor.js'
 import { createPolicy, type Action } from '../identity/policy.js'
 import { ChatStore, scopePartition } from './turns.store.js'
@@ -39,6 +40,12 @@ export function createChat(store: ChatStore) {
       return store.getConversation(await authorize(actor, scopeId, 'conversation:read', id), id)
     },
     async getTurn(actor: Actor, scopeId: string, id: string) {
+      return store.getTurn(await authorize(actor, scopeId, 'turn:read', id), id)
+    },
+    async cancelTurn(actor: Actor, scopeId: string, id: string) {
+      await authorize(actor, scopeId, 'turn:cancel', id)
+      await authorize(actor, scopeId, 'turn:read', id)
+      await cancelTurn(store, actor, { userId: actor.userId, scopeId, turnId: id })
       return store.getTurn(await authorize(actor, scopeId, 'turn:read', id), id)
     },
     async acceptTurn(actor: Actor, scopeId: string, id: string, key: string, input: TurnInput): Promise<TurnSnapshot> {

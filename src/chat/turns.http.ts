@@ -10,6 +10,7 @@ type Request = { actor?: Actor; scopeId: string; requestId?: string } & (
   | { operation: 'createConversation'; body?: unknown }
   | { operation: 'listConversations' }
   | { operation: 'getConversation'; conversationId: string }
+  | { operation: 'cancelTurn'; turnId: string; body?: unknown }
   | { operation: 'getTurn'; turnId: string }
   | { operation: 'acceptTurn'; conversationId: string; idempotencyKey?: string; body: unknown }
 )
@@ -36,6 +37,10 @@ export async function chatHttp(chat: Chat, request: Request): Promise<{ status: 
       case 'listConversations': return { status: 200, body: await chat.listConversations(actor, scopeId) }
       case 'getConversation': return { status: 200, body: await chat.getConversation(actor, scopeId, nonempty(request.conversationId)) }
       case 'getTurn': return { status: 200, body: { ...await chat.getTurn(actor, scopeId, nonempty(request.turnId)) } }
+      case 'cancelTurn': {
+        if (request.body != null) invalid()
+        return { status: 200, body: { ...await chat.cancelTurn(actor, scopeId, nonempty(request.turnId)) } }
+      }
       case 'acceptTurn': {
         const text = nonempty(objectBody(request.body, 'text').text)
         const { turnId, status } = await chat.acceptTurn(actor, scopeId, nonempty(request.conversationId), nonempty(request.idempotencyKey), { text })

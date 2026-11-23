@@ -19,7 +19,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         }
       ],
       "post": {
@@ -104,7 +105,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         },
         {
           "name": "conversationId",
@@ -113,7 +115,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         }
       ],
       "get": {
@@ -157,7 +160,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         },
         {
           "name": "conversationId",
@@ -166,7 +170,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         }
       ],
       "post": {
@@ -235,7 +240,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         },
         {
           "name": "turnId",
@@ -244,7 +250,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         }
       ],
       "get": {
@@ -288,7 +295,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         },
         {
           "name": "turnId",
@@ -297,7 +305,8 @@
           "schema": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
         }
       ],
       "get": {
@@ -345,6 +354,62 @@
             "$ref": "#/components/responses/RequestError"
           }
         }
+      }
+    },
+    "/v1/scopes/{scopeId}/turns/{turnId}/cancel": {
+      "parameters": [
+        {
+          "name": "scopeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
+        },
+        {
+          "name": "turnId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Maximum 256 bytes encoded as UTF-8."
+        }
+      ],
+      "post": {
+        "operationId": "cancelTurn",
+        "summary": "Cancel an active turn",
+        "responses": {
+          "200": {
+            "description": "Current authorized turn snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "default": {
+            "$ref": "#/components/responses/RequestError"
+          }
+        },
+        "description": "Cancellation is durable. Repeating the operation returns the current snapshot. A terminal turn keeps its existing status and final sequence."
       }
     }
   },
@@ -425,7 +490,8 @@
         "properties": {
           "title": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Maximum 393216 bytes encoded as UTF-8."
           }
         }
       },
@@ -443,7 +509,8 @@
           },
           "title": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Maximum 393216 bytes encoded as UTF-8."
           },
           "createdAt": {
             "type": "string",
@@ -485,7 +552,8 @@
           },
           "title": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Maximum 393216 bytes encoded as UTF-8."
           },
           "createdAt": {
             "type": "string",
@@ -528,7 +596,8 @@
         "properties": {
           "text": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Maximum 393216 bytes encoded as UTF-8."
           }
         },
         "required": [
