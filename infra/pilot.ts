@@ -14,6 +14,7 @@ import { addAccessLogs, addAlarms, addAlertsTopic, addFunctionLogs } from './obs
 import { addOutbox } from './outbox.ts'
 import { addWebHosting, checkWebDist } from './web-hosting.ts'
 import { addWorker } from './worker.ts'
+import type { ProviderMode } from '../src/config/runtime.ts'
 import { TIMING } from '../src/config/timing.ts'
 
 export interface PilotTarget {
@@ -31,7 +32,13 @@ export interface PilotTarget {
   readonly workerPaused?: boolean
   /** Stage access logs; only once A0 confirms the account's API Gateway CloudWatch role. */
   readonly apiAccessLogs?: boolean
+  /** Simulated provider of the worker; `fixture` when omitted. */
+  readonly providerMode?: PilotProviderMode
 }
+
+/** Modes selectable by context: only the non-billable simulations, even if the runtime gains real providers. */
+export const PILOT_PROVIDER_MODES = ['fixture', 'fail'] as const satisfies readonly ProviderMode[]
+export type PilotProviderMode = typeof PILOT_PROVIDER_MODES[number]
 
 /** Synthetic production build used by the test synthesis. */
 export const WEB_FIXTURE_DIR = 'tests/fixtures/web-dist'
@@ -58,10 +65,15 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   }
   const workerPaused = flag('arturia:workerPaused')
   const apiAccessLogs = flag('arturia:apiAccessLogs')
+  const providerMode = read('arturia:providerMode')
+  if (providerMode !== undefined && !(PILOT_PROVIDER_MODES as readonly string[]).includes(providerMode)) {
+    throw new Error('Invalid arturia:providerMode: use fixture or fail (fixture when omitted)')
+  }
   const redeploy = {
     ...(apiRedeploy === undefined ? {} : { apiRedeploy }),
     ...(workerPaused === undefined ? {} : { workerPaused }),
     ...(apiAccessLogs === undefined ? {} : { apiAccessLogs }),
+    ...(providerMode === undefined ? {} : { providerMode: providerMode as PilotProviderMode }),
   }
   const mode = read('arturia:target') ?? 'synthetic'
   if (mode === 'synthetic') {
@@ -133,7 +145,7 @@ export function createPilotStack(app: App, target: PilotTarget) {
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
   const worker = addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction,
-    paused: target.workerPaused === true })
+    providerMode: target.providerMode ?? 'fixture', paused: target.workerPaused === true })
   const { api, http, stream } = addChatApi(stack, {
     restApiName: NAMES.restApi,
     table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: webOrigin,

@@ -137,6 +137,12 @@ test('pilot_real_synth_requires_account_region_and_web_dir', () => {
   const { stack, template } = synthPilot(resolvePilotTarget(read(stated), { ARTURIA_WEB_DIR: web }, bundles))
   expect(stack.stackName).toBe(STACKS.pilot)
   expect(template.toJSON().Outputs?.SyntheticSynth).toBeUndefined()
+  // The simulated provider mode is chosen by context; an unknown mode stops the real synthesis.
+  expect(resolvePilotTarget(read({ ...stated, 'arturia:providerMode': 'fail' }), { ARTURIA_WEB_DIR: web }, bundles))
+    .toMatchObject({ synthetic: false, providerMode: 'fail' })
+  const rejected = runApp({ ...stated, 'arturia:providerMode': 'catalog' }, { ARTURIA_WEB_DIR: web })
+  expect(rejected.status).not.toBe(0)
+  expect(rejected.stderr).toContain('arturia:providerMode')
 }, 60_000)
 
 test('test_synth_is_marked_non_deployable', () => {

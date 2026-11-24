@@ -16,7 +16,7 @@ import {
 } from './delivery.ts'
 import { FoundationStack } from './foundation-stack.ts'
 import { ALARM_PERIOD_SECONDS, LOG_RETENTION_DAYS, THRESHOLDS, checkThresholds } from './observability.ts'
-import { WEB_FIXTURE_DIR, createPilotStack, resolvePilotTarget, type PilotTarget } from './pilot.ts'
+import { PILOT_PROVIDER_MODES, WEB_FIXTURE_DIR, createPilotStack, resolvePilotTarget, type PilotTarget } from './pilot.ts'
 
 const tmp: string[] = []
 const tempDir = () => { const dir = mkdtempSync(join(tmpdir(), 'arturia-obs-')); tmp.push(dir); return dir }
@@ -255,6 +255,45 @@ describe('kill_switch_disables_worker_mapping', () => {
     }
     expect(strip(paused)).toEqual(strip(running))
   }, 30_000)
+})
+
+describe('provider_mode_context_selects_only_simulated_modes', () => {
+  const read = (context: Record<string, unknown>) => (key: string) => context[key]
+  const workerFunction = (json: { Resources: Record<string, Resource> }) =>
+    ofType(json, 'AWS::Lambda::Function').find(([, fn]) => fn.Properties!.FunctionName === NAMES.workerFunction)!
+  const workerMode = (json: { Resources: Record<string, Resource> }) =>
+    workerFunction(json)[1].Properties!.Environment.Variables.ARTURIA_PROVIDER_MODE
+
+  test('the context accepts only fixture and fail and is optional', () => {
+    expect(PILOT_PROVIDER_MODES).toEqual(['fixture', 'fail'])
+    expect(resolvePilotTarget(read({}), {})).toEqual(synthetic)
+    expect(resolvePilotTarget(read({ 'arturia:providerMode': 'fixture' }), {})).toEqual({ ...synthetic, providerMode: 'fixture' })
+    expect(resolvePilotTarget(read({ 'arturia:providerMode': 'fail' }), {})).toEqual({ ...synthetic, providerMode: 'fail' })
+    for (const value of ['catalog', 'openai', 'anthropic', 'FIXTURE', 'Fail', '', '  ', true, 0]) {
+      expect(() => resolvePilotTarget(read({ 'arturia:providerMode': value }), {}), String(value)).toThrow(/arturia:providerMode/)
+    }
+  })
+
+  test('the worker runs the fixture by default and the stated mode otherwise', () => {
+    expect(workerMode(synth().json)).toBe('fixture')
+    expect(workerMode(synth({ providerMode: 'fixture' }).json)).toBe('fixture')
+    expect(workerMode(synth({ providerMode: 'fail' }).json)).toBe('fail')
+  }, 30_000)
+
+  test('switching to fail changes only the worker variable and keeps the switch, IAM, table and logical IDs', () => {
+    const strip = (json: { Resources: Record<string, Resource> }) => {
+      const copy = structuredClone(json.Resources)
+      delete copy[workerFunction(json)[0]]!.Properties!.Environment.Variables.ARTURIA_PROVIDER_MODE
+      return copy
+    }
+    for (const workerPaused of [false, true]) {
+      const fixture = synth({ workerPaused }).json
+      const fail = synth({ workerPaused, providerMode: 'fail' }).json
+      expect(Object.keys(fail.Resources).sort()).toEqual(Object.keys(fixture.Resources).sort())
+      expect(strip(fail)).toEqual(strip(fixture))
+      expect(fail.Parameters).toEqual(fixture.Parameters)
+    }
+  }, 60_000)
 })
 
 test('stack_resources_tagged', () => {
