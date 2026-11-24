@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  CfnOutput, Duration, Fn, Stack, aws_apigateway as gateway, aws_cloudfront as cloudfront, aws_cognito as cognito,
+  CfnOutput, Duration, Fn, RemovalPolicy, Stack, aws_apigateway as gateway, aws_cloudfront as cloudfront, aws_cognito as cognito,
   aws_iam as iam, aws_lambda as lambda, aws_s3 as s3, aws_s3_deployment as deploy,
 } from 'aws-cdk-lib'
 import { S3BucketOrigin } from 'aws-cdk-lib/aws-cloudfront-origins'
@@ -98,6 +98,8 @@ export function addWebHosting(scope: Construct, props: WebHostingProps) {
     encryption: s3.BucketEncryption.S3_MANAGED,
     objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
     enforceSSL: true,
+    // D3: deleted with the stack after it is emptied by hand (runbook). No auto-delete custom resource or role.
+    removalPolicy: RemovalPolicy.DESTROY,
   })
   const origin = S3BucketOrigin.withOriginAccessControl(bucket)
 
@@ -174,10 +176,10 @@ export function addWebHosting(scope: Construct, props: WebHostingProps) {
   // New bundles land before the index.html that references them; config.json goes last.
   pages.node.addDependency(assets)
   config.node.addDependency(pages)
-  namePublisher(scope, assets, [pages, config])
+  const publisher = namePublisher(scope, assets, [pages, config])
 
   new CfnOutput(scope, 'WebUrl', { value: `${webOrigin}/` })
-  return { bucket, distribution, origin: webOrigin }
+  return { bucket, distribution, origin: webOrigin, publisher }
 }
 
 /**
@@ -195,4 +197,5 @@ function namePublisher(scope: Construct, first: deploy.BucketDeployment, others:
   for (const deployment of others) {
     if (!deployment.node.tryRemoveChild('AwsCliLayer')) throw new Error('BucketDeployment layer layout changed')
   }
+  return handlers[0]!
 }

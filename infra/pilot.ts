@@ -3,13 +3,14 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { Aws, CfnOutput, CliCredentialsStackSynthesizer, Duration, Lazy, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
+import { Aws, CfnOutput, CliCredentialsStackSynthesizer, Duration, Lazy, Stack, Tags, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
 import { APIGATEWAY_AUTHORIZER_CHANGE_DEPLOYMENT_LOGICAL_ID } from 'aws-cdk-lib/cx-api'
 import { addChatApi } from './chat-api.ts'
 import {
   ARTIFACT_BUCKET, ARTIFACT_PREFIX, BUNDLES, NAMES, STACKS, SYNTHETIC_ACCOUNT, roleArn, type BundleName, type RoleName, type Target,
 } from './delivery.ts'
 import { addIdentity } from './identity.ts'
+import { addAccessLogs, addAlarms, addAlertsTopic, addFunctionLogs } from './observability.ts'
 import { addOutbox } from './outbox.ts'
 import { addWebHosting, checkWebDist } from './web-hosting.ts'
 import { addWorker } from './worker.ts'
@@ -26,6 +27,10 @@ export interface PilotTarget {
   readonly webDistDir: string
   /** Optional salt that forces a new API Gateway deployment (recovery; see README). */
   readonly apiRedeploy?: string
+  /** Kill switch: disables the worker's event source mapping (messages wait in the queue). */
+  readonly workerPaused?: boolean
+  /** Stage access logs; only once A0 confirms the account's API Gateway CloudWatch role. */
+  readonly apiAccessLogs?: boolean
 }
 
 /** Synthetic production build used by the test synthesis. */
@@ -45,7 +50,19 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   if (apiRedeploy !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(apiRedeploy)) {
     throw new Error('Invalid arturia:apiRedeploy: use 1-64 letters, digits, dots, dashes or underscores')
   }
-  const redeploy = apiRedeploy === undefined ? {} : { apiRedeploy }
+  const flag = (key: string) => {
+    const value = read(key)
+    if (value === undefined) return undefined
+    if (value !== 'true' && value !== 'false') throw new Error(`Invalid ${key}: use true or false`)
+    return value === 'true'
+  }
+  const workerPaused = flag('arturia:workerPaused')
+  const apiAccessLogs = flag('arturia:apiAccessLogs')
+  const redeploy = {
+    ...(apiRedeploy === undefined ? {} : { apiRedeploy }),
+    ...(workerPaused === undefined ? {} : { workerPaused }),
+    ...(apiAccessLogs === undefined ? {} : { apiAccessLogs }),
+  }
   const mode = read('arturia:target') ?? 'synthetic'
   if (mode === 'synthetic') {
     return { synthetic: true, account: SYNTHETIC_ACCOUNT, region: 'us-east-1', bundleDir: 'infra/fixtures/bundles',
@@ -86,6 +103,9 @@ export function createPilotStack(app: App, target: PilotTarget) {
   // Off by default: without it the authorizer configuration is not part of the API deployment's logical ID, so an
   // authorizer change would never reach the stage. Set on the stack so every App that composes the pilot gets it.
   stack.node.setContext(APIGATEWAY_AUTHORIZER_CHANGE_DEPLOYMENT_LOGICAL_ID, true)
+  // Cost allocation (D4: the budget filters on Project) and inventory.
+  Tags.of(stack).add('Project', 'arturia')
+  Tags.of(stack).add('Environment', 'pilot')
   // Same concrete account as the stack: with a token account CDK treats the role as foreign and
   // moves the dropped grants into resource policies. The synthesized template is never versioned.
   const deployed: Target = { partition: Aws.PARTITION, account: target.account, region: target.region }
@@ -108,8 +128,10 @@ export function createPilotStack(app: App, target: PilotTarget) {
     table: NAMES.table, turnQueue: NAMES.turnQueue,
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
-  addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction })
-  const { api } = addChatApi(stack, {
+  const worker = addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction,
+    paused: target.workerPaused === true })
+  const { api, http, stream } = addChatApi(stack, {
+    restApiName: NAMES.restApi,
     table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: webOrigin,
     httpCode: code('http'), httpRole: role('http'), httpFunctionName: NAMES.httpFunction,
     streamCode: code('stream'), streamRole: role('stream'), streamFunctionName: NAMES.streamFunction,
@@ -120,6 +142,14 @@ export function createPilotStack(app: App, target: PilotTarget) {
   hosting = addWebHosting(stack, {
     distDir: target.webDistDir, api, cognitoDomain: domain, clientId: client.userPoolClientId, publisherRole: role('publisher'),
   })
+  // Observability (13.8): one explicit log group per function, the publisher included, and the D4 alarms.
+  const own = (fn: lambda.Function) => fn.node.defaultChild as lambda.CfnFunction
+  addFunctionLogs(stack, {
+    [NAMES.httpFunction]: own(http), [NAMES.streamFunction]: own(stream), [NAMES.workerFunction]: own(worker),
+    [NAMES.relayFunction]: own(relay), [NAMES.publisherFunction]: own(hosting.publisher),
+  })
+  if (target.apiAccessLogs === true) addAccessLogs(stack, api)
+  addAlarms(stack, addAlertsTopic(stack))
   if (target.synthetic) new CfnOutput(stack, 'SyntheticSynth', { value: 'true', description: 'Test synthesis: not deployable' })
   return stack
 }

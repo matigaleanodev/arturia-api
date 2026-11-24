@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { Duration, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sqs as sqs } from 'aws-cdk-lib'
+import { Duration, RemovalPolicy, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sqs as sqs } from 'aws-cdk-lib'
 import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
 import { TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
+import { TABLE_LIMITS } from './cost-controls.ts'
 
 export interface OutboxNames {
   readonly table: string
@@ -21,7 +22,13 @@ export function addOutbox(scope: Construct, relay: lambda.Function, names?: Outb
     partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
     sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
     billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+    maxReadRequestUnits: TABLE_LIMITS.maxReadRequestUnits,
+    maxWriteRequestUnits: TABLE_LIMITS.maxWriteRequestUnits,
     stream: dynamodb.StreamViewType.KEYS_ONLY,
+    // Synthetic pilot data (D3): deleted with the stack, no point-in-time recovery or deletion protection.
+    pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: false },
+    deletionProtection: false,
+    removalPolicy: RemovalPolicy.DESTROY,
   })
   const workerDlq = new sqs.Queue(scope, 'TurnDeadLetters', { queueName: names?.turnDeadLetters, fifo: true, retentionPeriod })
   // Retention outlives a paused worker; the visibility follows the timing invariant.

@@ -1,27 +1,32 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { Aws, BootstraplessSynthesizer, CfnOutput, Fn, RemovalPolicy, Stack } from 'aws-cdk-lib'
-import { CfnRole } from 'aws-cdk-lib/aws-iam'
+import { Aws, BootstraplessSynthesizer, CfnOutput, Fn, RemovalPolicy, Stack, Tags } from 'aws-cdk-lib'
+import { CfnManagedPolicy, CfnRole } from 'aws-cdk-lib/aws-iam'
 import { CfnBucket, CfnBucketPolicy } from 'aws-cdk-lib/aws-s3'
 import type { Construct } from 'constructs'
+import { addBudget } from './cost-controls.ts'
 import {
-  ARTIFACT_BUCKET, BOUNDARY_NAME, ROLE_NAMES, STACKS, policy, rolePolicies, roleTrust, type Target,
+  ARTIFACT_BUCKET, BOUNDARY_NAME, OPERATOR_POLICY_NAME, ROLE_NAMES, STACKS, operatorManagedPolicy, policy, rolePolicies, roleTrust,
+  type Target,
 } from './delivery.ts'
 
 /**
- * Privileged foundation: the artifact bucket and the pilot's predefined roles. It has no assets and
- * needs no CDK bootstrap. An administrator deploys it after creating the external boundary, which
- * this stack references but cannot edit. The template is account-agnostic.
+ * Privileged foundation: the artifact bucket, the pilot's predefined roles, the operator's managed
+ * policy and the project's monthly budget. It has no assets and needs no CDK bootstrap. An administrator
+ * deploys it after creating the external boundary, which this stack references but cannot edit. The
+ * budget lives here so that destroying the pilot keeps cost monitoring. The template is account-agnostic.
  */
 export class FoundationStack extends Stack {
   constructor(scope: Construct, id: string) {
     super(scope, id, {
       stackName: STACKS.foundation,
-      description: 'Arturia: pilot artifact bucket and predefined roles (no application resources)',
+      description: 'Arturia: pilot artifact bucket, predefined roles, operator policy and budget (no application resources)',
       synthesizer: new BootstraplessSynthesizer(),
     })
     const deployed: Target = { partition: Aws.PARTITION, account: Aws.ACCOUNT_ID, region: Aws.REGION }
+    Tags.of(this).add('Project', 'arturia')
+    Tags.of(this).add('Environment', 'foundation')
 
     const bucket = new CfnBucket(this, 'Artifacts', {
       bucketName: Fn.sub(ARTIFACT_BUCKET),
@@ -58,6 +63,14 @@ export class FoundationStack extends Stack {
       })
       new CfnOutput(this, `${name}RoleArn`, { value: role.attrArn })
     }
+    // Referenced by name from the Architect permission set; attaching it is an administrative step (A1).
+    const operator = new CfnManagedPolicy(this, 'OperatorPolicy', {
+      managedPolicyName: OPERATOR_POLICY_NAME,
+      description: 'Arturia pilot: deployment with the CloudFormation role and runbook operations on Arturia resources',
+      policyDocument: operatorManagedPolicy(deployed),
+    })
+    new CfnOutput(this, 'OperatorPolicyArn', { value: operator.ref })
+    addBudget(this)
     new CfnOutput(this, 'ArtifactBucket', { value: bucket.ref })
   }
 }

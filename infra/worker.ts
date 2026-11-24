@@ -19,6 +19,8 @@ interface WorkerProps {
   readonly functionName?: string
   readonly providerMode?: ProviderMode
   readonly timing?: Timing
+  /** Operational kill switch: a paused worker leaves messages in the queue (14-day retention) and turns untouched. */
+  readonly paused?: boolean
 }
 
 /**
@@ -26,7 +28,8 @@ interface WorkerProps {
  * turn and the FIFO rule of returning the rest of a batch never applies. The event source caps
  * concurrency instead of reserved concurrency.
  */
-export function addWorker(scope: Construct, { table, queue, code, role, functionName, providerMode = 'fixture', timing = TIMING }: WorkerProps) {
+export function addWorker(scope: Construct, { table, queue, code, role, functionName, providerMode = 'fixture', timing = TIMING,
+  paused = false }: WorkerProps) {
   const t = checkTiming(timing)
   const worker = new lambda.Function(scope, 'GenerationWorker', {
     functionName, runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code, role,
@@ -35,7 +38,7 @@ export function addWorker(scope: Construct, { table, queue, code, role, function
   })
   worker.addToRolePolicy(new iam.PolicyStatement({ actions: WORKER_TABLE_ACTIONS, resources: [table.tableArn] }))
   worker.addEventSource(new SqsEventSource(queue, {
-    batchSize: 1, reportBatchItemFailures: true, maxConcurrency: t.workerMaxConcurrency,
+    batchSize: 1, reportBatchItemFailures: true, maxConcurrency: t.workerMaxConcurrency, enabled: !paused,
   }))
   return worker
 }

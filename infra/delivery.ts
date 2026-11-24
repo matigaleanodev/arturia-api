@@ -48,7 +48,16 @@ export const NAMES = {
   webCachePolicy: `${P}web`,
   webHeaders: `${P}web`,
   configHeaders: `${P}config`,
+  // Observability. CloudWatch metrics of REST APIs use the API name as a dimension.
+  restApi: `${P}api`,
+  alertsTopic: `${P}alerts`,
+  accessLogGroup: `${P}api-access`,
 } as const
+
+/** Account-level monthly budget owned by the foundation (D4). */
+export const BUDGET_NAME = 'arturia-aws-monthly'
+/** Customer managed policy for the Architect permission set; attaching it is an administrative step (A1). */
+export const OPERATOR_POLICY_NAME = `${P}operator`
 
 /** Roles created by the foundation. */
 export const ROLE_NAMES = ['stream', 'relay', 'worker', 'http', 'publisher', 'cloudformation'] as const
@@ -77,8 +86,15 @@ function arns(t: Target) {
   const table = regional('dynamodb', `table/${NAMES.table}`)
   const fn = (name: string) => regional('lambda', `function:${name}`)
   const logs = (name: string) => regional('logs', `log-group:/aws/lambda/${name}:*`)
+  const topic = regional('sns', NAMES.alertsTopic)
   return {
     table, tableStream: `${table}/stream/*`, fn, logs,
+    // Function log groups and the access log group, with and without the log stream suffix.
+    logGroups: [`log-group:/aws/lambda/${P}*`, `log-group:${P}*`].map(group => regional('logs', group)),
+    alarms: regional('cloudwatch', `alarm:${P}*`),
+    topic, subscriptions: `${topic}:*`,
+    apiTags: `arn:${t.partition}:apigateway:${t.region}::/tags/*`,
+    budget: `arn:${t.partition}:budgets::${t.account}:budget/${BUDGET_NAME}`,
     queue: (name: string) => regional('sqs', name),
     userPools: regional('cognito-idp', 'userpool/*'),
     eventSourceMappings: regional('lambda', 'event-source-mapping:*'),
@@ -205,6 +221,7 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       allow([
         'cloudfront:CreateFunction', 'cloudfront:DescribeFunction', 'cloudfront:GetFunction', 'cloudfront:UpdateFunction',
         'cloudfront:PublishFunction', 'cloudfront:DeleteFunction',
+        'cloudfront:TagResource', 'cloudfront:UntagResource', 'cloudfront:ListTagsForResource',
       ], [a.cloudfront(`function/${NAMES.rewriteFunction}`)]),
       allow([
         'cloudfront:CreateOriginAccessControl', 'cloudfront:GetOriginAccessControl', 'cloudfront:GetOriginAccessControlConfig',
@@ -219,6 +236,29 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         'cloudfront:GetResponseHeadersPolicyConfig', 'cloudfront:UpdateResponseHeadersPolicy',
         'cloudfront:DeleteResponseHeadersPolicy',
       ], [a.cloudfront('response-headers-policy/*')]),
+      // Observability (13.8): explicit log groups, alarms and the alerts topic, all under arturia-pilot-* names.
+      allow([
+        'logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy',
+        'logs:TagResource', 'logs:UntagResource', 'logs:ListTagsForResource', 'logs:GetDataProtectionPolicy',
+        // Legacy tag actions and the data protection cleanup listed by the AWS::Logs::LogGroup handlers.
+        'logs:TagLogGroup', 'logs:UntagLogGroup', 'logs:ListTagsLogGroup', 'logs:DeleteDataProtectionPolicy',
+      ], a.logGroups),
+      // Listing has no resource type: read-only metadata, region bound.
+      allow(['logs:DescribeLogGroups'], ['*'], sameRegion(t)),
+      allow([
+        'cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms',
+        'cloudwatch:TagResource', 'cloudwatch:UntagResource', 'cloudwatch:ListTagsForResource',
+      ], [a.alarms]),
+      allow([
+        'sns:CreateTopic', 'sns:DeleteTopic', 'sns:GetTopicAttributes', 'sns:SetTopicAttributes', 'sns:Subscribe',
+        'sns:ListSubscriptionsByTopic', 'sns:TagResource', 'sns:UntagResource', 'sns:ListTagsForResource',
+        // The AWS::SNS::Topic read handler reads the data protection policy.
+        'sns:GetDataProtectionPolicy',
+      ], [a.topic]),
+      allow(['sns:Unsubscribe', 'sns:GetSubscriptionAttributes', 'sns:SetSubscriptionAttributes'], [a.subscriptions]),
+      // Tags of the App (Project, Environment) on event source mappings and on the API and its stage.
+      allow(['lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags'], [a.eventSourceMappings]),
+      allow(['apigateway:GET', 'apigateway:PUT', 'apigateway:DELETE'], [a.apiTags]),
     ],
   }
 }
@@ -235,20 +275,23 @@ export function boundaryPolicy(t: Target) {
   const regional = (service: string, resource: string) => `arn:${t.partition}:${service}:${t.region}:${t.account}:${resource}`
   const named = `${P}*`
   return policy([
-    allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [regional('logs', `log-group:/aws/lambda/${named}`)]),
+    allow(['logs:*'], [regional('logs', `log-group:/aws/lambda/${named}`), regional('logs', `log-group:${named}`)]),
+    allow(['cloudwatch:*'], [regional('cloudwatch', `alarm:${named}`)]),
+    allow(['sns:*'], [regional('sns', named)]),
     allow(['dynamodb:*'], [regional('dynamodb', `table/${named}`)]),
     allow(['sqs:*'], [regional('sqs', named)]),
     allow(['lambda:*'], [regional('lambda', `function:${named}`), regional('lambda', 'event-source-mapping:*'),
       regional('lambda', `layer:${named}`), regional('lambda', `layer:${named}:*`)]),
     allow(['cognito-idp:*'], [regional('cognito-idp', 'userpool/*')]),
     allow(['apigateway:GET', 'apigateway:POST', 'apigateway:PUT', 'apigateway:PATCH', 'apigateway:DELETE'],
-      [`arn:${t.partition}:apigateway:${t.region}::/restapis`, `arn:${t.partition}:apigateway:${t.region}::/restapis/*`]),
+      [`arn:${t.partition}:apigateway:${t.region}::/restapis`, `arn:${t.partition}:apigateway:${t.region}::/restapis/*`,
+        `arn:${t.partition}:apigateway:${t.region}::/tags/*`]),
     allow(['s3:GetObject'], [`arn:${t.partition}:s3:::${bucketName(t)}/${ARTIFACT_PREFIX}*`]),
     allow(['s3:*'], [`arn:${t.partition}:s3:::${webBucketName(t)}`, `arn:${t.partition}:s3:::${webBucketName(t)}/*`]),
     allow(['cloudfront:*'], ['distribution/*', `function/${named}`, 'origin-access-control/*', 'cache-policy/*',
       'response-headers-policy/*'].map(resource => `arn:${t.partition}:cloudfront::${t.account}:${resource}`)),
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
-      'lambda:CreateEventSourceMapping'], ['*'], sameRegion(t)),
+      'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups'], ['*'], sameRegion(t)),
     allow(['iam:PassRole'], [`arn:${t.partition}:iam::${t.account}:role/${named}`]),
   ])
 }
@@ -271,3 +314,36 @@ export function operatorPolicy(t: Target) {
     allow(['s3:ListBucket', 's3:GetBucketLocation', 's3:GetEncryptionConfiguration'], [a.bucket]),
   ])
 }
+
+/**
+ * Operations on the pilot's data and observability, for the runbook procedures (provisioning, outbox
+ * republication, DLQ inspection and redrive, sign-out and disabling users, emptying the web bucket before
+ * deleting the stack, reading logs, alarms and the budget). Every resource is an Arturia name; the few
+ * actions without a resource type are read-only and region bound.
+ */
+export function operationsPolicy(t: Target) {
+  const a = arns(t)
+  const [turns, turnsDlq, relayDlq] = [NAMES.turnQueue, NAMES.turnDeadLetters, NAMES.relayDeadLetters].map(a.queue)
+  return policy([
+    allow(['dynamodb:DescribeTable', 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:PutItem', 'dynamodb:UpdateItem',
+      'dynamodb:ConditionCheckItem'], [a.table]),
+    allow(['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [turns]),
+    allow(['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl', 'sqs:StartMessageMoveTask',
+      'sqs:ListMessageMoveTasks', 'sqs:CancelMessageMoveTask'], [turnsDlq]),
+    allow(['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:PurgeQueue', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [relayDlq]),
+    // The pool ID is assigned at creation: scope by the App tags instead.
+    allow(['cognito-idp:AdminCreateUser', 'cognito-idp:AdminGetUser', 'cognito-idp:AdminUserGlobalSignOut',
+      'cognito-idp:AdminDisableUser', 'cognito-idp:AdminEnableUser', 'cognito-idp:AdminDeleteUser'], [a.userPools],
+    { StringEquals: { 'aws:ResourceTag/Project': 'arturia', 'aws:ResourceTag/Environment': 'pilot' } }),
+    allow(['s3:ListBucket'], [a.webBucket]),
+    allow(['s3:DeleteObject'], [`${a.webBucket}/*`]),
+    allow(['logs:FilterLogEvents', 'logs:GetLogEvents', 'logs:DescribeLogStreams', 'logs:StartQuery'], a.logGroups),
+    allow(['logs:GetQueryResults', 'logs:StopQuery', 'logs:DescribeLogGroups', 'cloudwatch:GetMetricData'], ['*'], sameRegion(t)),
+    allow(['cloudwatch:DescribeAlarms', 'cloudwatch:SetAlarmState'], [a.alarms]),
+    allow(['budgets:ViewBudget'], [a.budget]),
+  ])
+}
+
+/** One customer managed policy: deployment plus operations. IAM limits managed policies to 6,144 characters. */
+export const operatorManagedPolicy = (t: Target) =>
+  policy([...operatorPolicy(t).Statement, ...operationsPolicy(t).Statement])

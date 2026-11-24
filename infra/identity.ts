@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { CfnOutput, CfnParameter, type Stack } from 'aws-cdk-lib'
+import { CfnOutput, CfnParameter, RemovalPolicy, type Stack } from 'aws-cdk-lib'
 import {
   FeaturePlan, ManagedLoginVersion, Mfa, OAuthScope, ResourceServerScope, UserPool, UserPoolClientIdentityProvider,
 } from 'aws-cdk-lib/aws-cognito'
@@ -27,6 +27,9 @@ export function addIdentity(stack: Stack, props: IdentityProps) {
     selfSignUpEnabled: false,
     mfa: Mfa.REQUIRED,
     mfaSecondFactor: { sms: false, otp: true },
+    // Synthetic pilot users (D3): the pool is deleted with the stack.
+    deletionProtection: false,
+    removalPolicy: RemovalPolicy.DESTROY,
   })
   const accessScope = new ResourceServerScope({ scopeName, scopeDescription: 'Access the Arturia API' })
   const resourceServer = userPool.addResourceServer('ArturiaApi', {

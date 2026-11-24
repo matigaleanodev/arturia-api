@@ -63,6 +63,8 @@ export interface ChatApiProps {
   readonly streamRole?: iam.IRole
   readonly httpFunctionName?: string
   readonly streamFunctionName?: string
+  /** Fixed name: CloudWatch publishes REST API metrics under the ApiName dimension. */
+  readonly restApiName?: string
   readonly traffic?: Traffic
   /** Off by default. When set it must cover every stream the throttle admits. */
   readonly sseReservedConcurrency?: number
@@ -91,6 +93,7 @@ export function addChatApi(scope: Construct, props: ChatApiProps) {
   }
   const routeLimit = (rate: number, burst: number) => ({ throttlingRateLimit: rate, throttlingBurstLimit: burst })
   const api = new gateway.RestApi(scope, 'RegionalApi', {
+    restApiName: props.restApiName,
     endpointConfiguration: { types: [gateway.EndpointType.REGIONAL] }, cloudWatchRole: false,
     deployOptions: {
       ...routeLimit(traffic.rateLimit, traffic.burstLimit),

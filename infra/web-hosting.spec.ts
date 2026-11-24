@@ -300,7 +300,8 @@ test('callback_logout_and_cors_equal_distribution_origin', () => {
     expect(render(response.ResponseParameters['method.response.header.Access-Control-Allow-Origin'])).toBe(`'${web}'`)
   }
   // The provisional parameters are gone: every origin derives from the distribution.
-  expect(Object.keys(json.Parameters ?? {}).filter(name => name !== 'BootstrapVersion')).toEqual(['CognitoDomainPrefix'])
+  // The origin is derived, never a parameter. The only other parameter is the alerts email (13.8), never versioned.
+  expect(Object.keys(json.Parameters ?? {}).filter(name => name !== 'BootstrapVersion').sort()).toEqual(['AlertEmail', 'CognitoDomainPrefix'])
   const [, restApi] = one(json, 'AWS::ApiGateway::RestApi')
   expect(JSON.stringify(restApi)).not.toContain(origins(json).distribution)
   expect(render(json.Outputs!.WebUrl.Value)).toBe(`${web}/`)
