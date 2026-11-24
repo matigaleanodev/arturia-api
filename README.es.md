@@ -67,6 +67,20 @@ Una tabla DynamoDB contiene el presupuesto del despliegue. Cada intento reserva 
 
 El registro conserva tarifa, proveedor, modelo, operación, uso y costo. La reentrega del trabajo no permite reutilizar una reserva. El reporte de uso final confirmado o la factura concilian una sola vez el mes original. Un timeout, un stream interrumpido o la falta de reporte conservan la reserva completa hasta conciliarla. Cada nuevo intento autorizado requiere otro ID. El transporte debe desactivar los reintentos implícitos.
 
+## Scripts operativos
+
+`src/admin/` contiene las operaciones administrativas del piloto. Los dos scripts compilan antes de ejecutarse e imprimen una línea JSON. El `sub` de Cognito aparece enmascarado en la salida. Un modo de identidad sintética o un endpoint alternativo del SDK hacen que el script se niegue a ejecutar. Los comandos que acceden a la tabla exigen `--table`, `--region`, `--profile` y `--expected-account`. Antes de leer o escribir datos, confirman la cuenta y la región con el ARN de la tabla.
+
+| Comando | Propósito |
+| --- | --- |
+| `npm run provision:pilot -- --sub <sub>` | Simulación. Lista las filas que garantizaría, sin lecturas ni escrituras. |
+| `... --check <destino>` | Solo lectura. Informa `absent`, `partial`, `complete` o `conflict` y si existen permisos de modelo. Sale con 2 si el estado no está completo. |
+| `... --apply --confirm-totp-enrolled <destino>` | Crea en una transacción las filas que faltan: `SUBJECT`, `ACCOUNT` (activa, `mfaVerifiedAt` = ahora + 60 s, como margen ante un reloj local atrasado) y `SCOPE` de `personal` y `work`. Nunca modifica filas existentes. Una cuenta deshabilitada, acciones de ámbito distintas o un mapeo inválido detienen la ejecución antes de escribir. Nunca escribe permisos de modelo. |
+| `npm run republish:outbox -- --sub <sub> <destino>` | Lista en modo de solo lectura las intenciones pendientes del outbox del usuario (`--scope` acota la búsqueda). |
+| `... --apply --queue-url <url>` | Publica cada intención pendiente en la cola FIFO de turnos (`*turns.fifo`, nunca la DLQ) de la misma cuenta y región, y después la marca. Se detiene ante el primer fallo y deja pendiente el resto. Un duplicado no produce efectos, porque el worker reclama el turno persistido por su ID. |
+
+Después de `--apply` hay que esperar más de un minuto y volver a iniciar sesión: las sesiones autenticadas antes de `mfaVerifiedAt` se rechazan. Los mensajes de la DLQ de turnos ya tienen su fila del outbox publicada y se recuperan con un redrive de SQS hacia la cola de turnos, no con `republish:outbox`. La DLQ del relay solo contiene metadatos de lotes del stream: esos turnos se recuperan con `republish:outbox`.
+
 ## Desarrollo local
 
 Usá la versión de Node.js de `.nvmrc` e instalá las dependencias con `npm ci`.

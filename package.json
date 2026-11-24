@@ -15,6 +15,8 @@
     "synth": "cdk synth --no-lookups --no-telemetry --no-notices",
     "bundle": "node scripts/bundle.mjs",
     "synth:pilot": "npm run bundle && cdk synth --no-lookups --no-telemetry --no-notices --output cdk.pilot.out -c arturia:target=pilot",
+    "provision:pilot": "tsc --project tsconfig.build.json && node scripts/provision-pilot.mjs",
+    "republish:outbox": "tsc --project tsconfig.build.json && node scripts/republish-outbox.mjs",
     "synth:foundation": "cdk synth --no-lookups --no-telemetry --no-notices --app \"node infra/foundation-app.ts\" --output cdk.foundation.out"
   },
   "devDependencies": {

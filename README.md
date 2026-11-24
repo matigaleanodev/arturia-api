@@ -67,6 +67,20 @@ One DynamoDB table owns the deployment budget. Each attempt reserves against bot
 
 The ledger records the applied tariff, provider, model, operation, usage and cost. Redelivery cannot reuse a reservation. A confirmed final usage report or invoice reconciles the original month exactly once. A timeout, interrupted stream or missing report retains the full reservation for reconciliation. Each subsequent authorized attempt needs a new ID. A transport must disable implicit retries.
 
+## Operator scripts
+
+`src/admin/` holds the administrative operations of the pilot. Both scripts compile first and print one JSON line. The Cognito subject is masked in the output. A synthetic identity mode or an SDK endpoint override aborts the script. Commands that touch the table require `--table`, `--region`, `--profile` and `--expected-account`. Before any data access, they confirm the account and region from the table ARN.
+
+| Command | Purpose |
+| --- | --- |
+| `npm run provision:pilot -- --sub <sub>` | Dry run. Lists the rows it would ensure without reading or writing anything. |
+| `... --check <target>` | Read-only. Reports `absent`, `partial`, `complete` or `conflict`, plus the presence of model grants. Exits with 2 unless the state is complete. |
+| `... --apply --confirm-totp-enrolled <target>` | Creates the missing `SUBJECT`, `ACCOUNT` (active, `mfaVerifiedAt` = now + 60 s, a margin against a local clock behind AWS) and the `personal` and `work` `SCOPE` rows in one transaction. Existing rows are never modified. A disabled account, different scope actions or an invalid mapping stop the run before any write. Model grants are never written. |
+| `npm run republish:outbox -- --sub <sub> <target>` | Read-only listing of the user's pending outbox intents (`--scope` narrows it). |
+| `... --apply --queue-url <url>` | Publishes each pending intent to the FIFO turn queue (`*turns.fifo`, never the dead-letter queue) of the same account and region, then marks it. Stops at the first failure and leaves the rest pending. A duplicate is harmless: the worker claims the durable turn by ID. |
+
+After `--apply`, wait more than a minute and sign in again: sessions authenticated before `mfaVerifiedAt` are rejected. Messages in the turn dead-letter queue already have a published outbox row and are recovered with an SQS redrive to the turn queue, not with `republish:outbox`. The relay dead-letter queue holds stream batch metadata only; its turns are recovered with `republish:outbox`.
+
 ## Local development
 
 Use the Node.js version in `.nvmrc` and install dependencies with `npm ci`.
