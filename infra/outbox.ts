@@ -4,6 +4,7 @@
 import { Duration, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sqs as sqs } from 'aws-cdk-lib'
 import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
+import { TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
 
 export interface OutboxNames {
   readonly table: string
@@ -12,7 +13,9 @@ export interface OutboxNames {
   readonly relayDeadLetters: string
 }
 
-export function addOutbox(scope: Construct, relay: lambda.Function, names?: OutboxNames) {
+export function addOutbox(scope: Construct, relay: lambda.Function, names?: OutboxNames, timing: Timing = TIMING) {
+  const t = checkTiming(timing)
+  const retentionPeriod = Duration.days(t.turnRetentionDays)
   const table = new dynamodb.Table(scope, 'ChatTable', {
     tableName: names?.table,
     partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
@@ -20,11 +23,13 @@ export function addOutbox(scope: Construct, relay: lambda.Function, names?: Outb
     billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     stream: dynamodb.StreamViewType.KEYS_ONLY,
   })
-  const workerDlq = new sqs.Queue(scope, 'TurnDeadLetters', { queueName: names?.turnDeadLetters, fifo: true, retentionPeriod: Duration.days(14) })
+  const workerDlq = new sqs.Queue(scope, 'TurnDeadLetters', { queueName: names?.turnDeadLetters, fifo: true, retentionPeriod })
+  // Retention outlives a paused worker; the visibility follows the timing invariant.
   const turnQueue = new sqs.Queue(scope, 'TurnQueue', {
-    queueName: names?.turnQueue, fifo: true, deadLetterQueue: { queue: workerDlq, maxReceiveCount: 5 },
+    queueName: names?.turnQueue, fifo: true, retentionPeriod, visibilityTimeout: Duration.seconds(t.turnVisibilitySeconds),
+    deadLetterQueue: { queue: workerDlq, maxReceiveCount: t.turnMaxReceives },
   })
-  const streamDlq = new sqs.Queue(scope, 'RelayDeadLetters', { queueName: names?.relayDeadLetters, retentionPeriod: Duration.days(14) })
+  const streamDlq = new sqs.Queue(scope, 'RelayDeadLetters', { queueName: names?.relayDeadLetters, retentionPeriod })
   relay.addEnvironment('ARTURIA_TABLE_NAME', table.tableName)
   relay.addEnvironment('ARTURIA_TURN_QUEUE_URL', turnQueue.queueUrl)
   relay.addToRolePolicy(new iam.PolicyStatement({

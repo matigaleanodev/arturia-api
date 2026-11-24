@@ -15,6 +15,10 @@ import type { ModelWire } from '../../src/models/wire.js'
 import { ModelBudget, costMicros, type Tariff } from '../../src/models/budget.js'
 import { createTurnDispatcher, dispatchModel, type ModelTransport } from '../../src/models/dispatch.js'
 import { integrationDatabase } from '../support/dynamodb.js'
+import { createWorkerHandler } from '../../src/chat/generate.lambda.js'
+import { TIMING } from '../../src/config/timing.js'
+import { publishOutbox } from '../../src/jobs/outbox.js'
+import { FifoTurnQueue, deliver } from '../support/fifo-queue.js'
 
 let local: ReturnType<typeof integrationDatabase>
 let store: ChatStore
@@ -503,4 +507,47 @@ test('Luna pricing crosses the documented threshold after 272000 input tokens', 
   const input = (inputTokens: number) => ({ inputTokens, outputTokens: 8, reasoningTokens: 0, toolTokens: 0, toolCalls: 0 })
   expect(costMicros(candidateTariffs.openai, input(272_000))).toBe(27_204)
   expect(costMicros(candidateTariffs.openai, input(272_001))).toBe(54_407)
+})
+
+test('redelivery_and_redrive_never_reserve_again', async () => {
+  await write(pk(), 'MODEL#openai', goodGrant)
+  budget = new ModelBudget(store, { openai: usd })
+  const started = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  // The request crosses the wire and the invocation dies before any response.
+  const wire = vi.fn<ModelWire>(async () => {
+    started.resolve()
+    await release.promise
+    return modelReply([openAIText, openAITerminal('completed')])
+  })
+  const ref = await conversation()
+  const ids = Array.from({ length: TIMING.turnMaxReceives + 2 }, () => randomUUID())
+  const pending = [...ids]
+  const worker = createGenerationWorker(store, createCatalogTurnProvider(store, budget, settings, wire))
+  const handler = createWorkerHandler({ log: () => {}, newAttemptId: () => pending.shift()!, run: (r, id) => worker.runTurn(r, id) })
+  const queue = new FifoTurnQueue()
+  await publishOutbox(store, queue, ref)
+  const killed = handler({ Records: [queue.receive(time)!] })
+  await started.promise
+  try {
+    const read = vi.spyOn(store, 'read').mockRejectedValue(new Error('fixture throttling'))
+    for (let receive = 2; receive <= TIMING.turnMaxReceives; receive++) {
+      time += TIMING.turnVisibilitySeconds * 1000
+      expect(await deliver(queue, time, handler)).toBe('failed')
+    }
+    time += TIMING.turnVisibilitySeconds * 1000
+    expect(await deliver(queue, time, handler)).toBe('empty')
+    read.mockRestore()
+    queue.redrive()
+    expect(await deliver(queue, time, handler)).toBe('deleted')
+    expect(wire).toHaveBeenCalledTimes(1)
+    expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'failed', error: { code: 'SEND_UNCERTAIN' } })
+    // Only the attempt that crossed the boundary holds a reservation; retries never reserve.
+    expect(await budget.getAttempt(ids[0])).toMatchObject({ state: 'reserved', userId: actor.userId, scopeId, provider: 'openai' })
+    for (const id of ids.slice(1)) expect(await budget.getAttempt(id), id).toBeUndefined()
+  } finally {
+    release.resolve()
+    await killed
+  }
+  expect(wire).toHaveBeenCalledTimes(1)
 })

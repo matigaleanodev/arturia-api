@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { TIMING } from '../config/timing.js'
 import { ModelPolicyDenied, UncertainSend, type Provider, type ProviderEvent } from '../models/provider.js'
 import { ChatStore, turnKey } from './turns.store.js'
 import { ChatError, type TurnReference } from './turns.types.js'
@@ -128,8 +129,8 @@ async function generate(attempt: GenerationAttempt, provider: Provider, timeoutM
 }
 
 export function createGenerationWorker(store: ChatStore, provider: Provider, options: Options = {}) {
-  const timeoutMs = options.timeoutMs ?? 45_000
-  const leaseMs = options.leaseMs ?? timeoutMs + 30_000
+  const timeoutMs = options.timeoutMs ?? TIMING.providerTimeoutSeconds * 1000
+  const leaseMs = options.leaseMs ?? (options.timeoutMs === undefined ? TIMING.leaseSeconds * 1000 : timeoutMs + 30_000)
   const pollMs = options.pollMs ?? 500
   if (![timeoutMs, leaseMs, pollMs].every(n => Number.isSafeInteger(n) && n > 0) || leaseMs <= timeoutMs) {
     throw new RangeError('Generation requires positive durations and a lease longer than the provider timeout')

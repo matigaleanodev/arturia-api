@@ -6,6 +6,8 @@
 // stack only imports them and creates no IAM. No account ID lives here: every ARN is built from a
 // target, either CloudFormation pseudo parameters or values supplied by the operator.
 
+import { WORKER_TABLE_ACTIONS } from './worker.ts'
+
 /** One rolldown entry per Lambda handler. Output: `<outdir>/<name>/index.cjs`. */
 export const BUNDLES = {
   stream: 'src/chat/stream.lambda.ts',
@@ -30,6 +32,7 @@ const P = `${STACKS.pilot}-`
 export const NAMES = {
   streamFunction: `${P}stream`,
   relayFunction: `${P}relay`,
+  workerFunction: `${P}worker`,
   table: `${P}chat`,
   turnQueue: `${P}turns.fifo`,
   turnDeadLetters: `${P}turns-dlq.fifo`,
@@ -37,7 +40,7 @@ export const NAMES = {
 } as const
 
 /** Roles created by the foundation. */
-export const ROLE_NAMES = ['stream', 'relay', 'cloudformation'] as const
+export const ROLE_NAMES = ['stream', 'relay', 'worker', 'cloudformation'] as const
 export type RoleName = (typeof ROLE_NAMES)[number]
 export const BOUNDARY_NAME = `${P}boundary`
 
@@ -80,7 +83,8 @@ const passTo = (service: string): Condition => ({ StringEquals: { 'iam:PassedToS
 export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
   const a = arns(t)
   const queues = [NAMES.turnQueue, NAMES.turnDeadLetters, NAMES.relayDeadLetters].map(a.queue)
-  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction)]
+  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
+  const consumers = [a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
   const sendTo = (queue: string) =>
     allow(['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [a.queue(queue)])
   return {
@@ -99,6 +103,13 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       allow(['dynamodb:ListStreams'], ['*'], sameRegion(t)),
       sendTo(NAMES.turnQueue),
       sendTo(NAMES.relayDeadLetters),
+    ],
+    worker: [
+      allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.workerFunction)]),
+      allow([...WORKER_TABLE_ACTIONS], [a.table]),
+      // The SQS event source polls with the function role.
+      allow(['sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueUrl', 'sqs:DeleteMessage',
+        'sqs:GetQueueAttributes'], [a.queue(NAMES.turnQueue)]),
     ],
     cloudformation: [
       allow(['s3:GetObject'], [a.artifacts]),
@@ -137,11 +148,11 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         { StringEquals: { 'lambda:Principal': 'apigateway.amazonaws.com' } }),
       // CreateEventSourceMapping has no resource type: only the function condition can scope it.
       allow(['lambda:CreateEventSourceMapping'], ['*'],
-        { StringEquals: { 'lambda:FunctionArn': a.fn(NAMES.relayFunction), 'aws:RequestedRegion': t.region } }),
+        { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': t.region } }),
       allow(['lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping'],
-        [a.eventSourceMappings], { StringEquals: { 'lambda:FunctionArn': a.fn(NAMES.relayFunction) } }),
+        [a.eventSourceMappings], { StringEquals: { 'lambda:FunctionArn': consumers } }),
       allow(['lambda:GetEventSourceMapping'], [a.eventSourceMappings]),
-      allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay')], passTo('lambda.amazonaws.com')),
+      allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay'), roleArn(t, 'worker')], passTo('lambda.amazonaws.com')),
     ],
   }
 }

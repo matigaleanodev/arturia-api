@@ -12,6 +12,7 @@ import {
   ARTIFACT_PREFIX, BUNDLES, NAMES, ROLE_NAMES, STACKS, SYNTHETIC_ACCOUNT, boundaryArn, boundaryPolicy,
   operatorPolicy, policy, roleArn, rolePolicies, type Statement, type Target,
 } from './delivery.ts'
+import { TIMING } from '../src/config/timing.ts'
 import { FoundationStack } from './foundation-stack.ts'
 import { createPilotStack, resolvePilotTarget, type PilotTarget } from './pilot.ts'
 
@@ -45,7 +46,7 @@ test('pilot_synth_with_code_assets_succeeds', () => {
   expect(assembly.manifest.missing ?? []).toEqual([])
   const functions = template.findResources('AWS::Lambda::Function')
   const names = Object.values(functions).map(fn => fn.Properties.FunctionName).sort()
-  expect(names).toEqual([NAMES.relayFunction, NAMES.streamFunction].sort())
+  expect(names).toEqual([NAMES.relayFunction, NAMES.streamFunction, NAMES.workerFunction].sort())
   for (const fn of Object.values(functions)) expect(fn.Properties.Code.S3Key).toBeDefined()
   template.resourceCountIs('AWS::Cognito::UserPool', 1)
   template.resourceCountIs('AWS::DynamoDB::Table', 1)
@@ -145,8 +146,8 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(types.filter(type => type.endsWith('Policy'))).toEqual([])
     const roles = Object.values(template.findResources('AWS::Lambda::Function'))
       .map(fn => JSON.stringify(fn.Properties.Role)).sort()
-    expect(roles).toHaveLength(2)
-    ;(['relay', 'stream'] as const).forEach((name, index) => {
+    expect(roles).toHaveLength(3)
+    ;(['relay', 'stream', 'worker'] as const).forEach((name, index) => {
       expect(roles[index]).toContain(`:${SYNTHETIC_ACCOUNT}:role/arturia-pilot-${name}`)
     })
     expect(json.Parameters?.BootstrapVersion).toBeUndefined()
@@ -201,10 +202,12 @@ describe('pilot_creates_no_iam_roles', () => {
 
   test('cloudformation role scopes event source mappings and invoke permissions', () => {
     const cfn = rolePolicies(target).cloudformation
-    const relay = `arn:aws:lambda:us-east-1:111111111111:function:${NAMES.relayFunction}`
+    const consumers = [NAMES.relayFunction, NAMES.workerFunction].map(name => `arn:aws:lambda:us-east-1:111111111111:function:${name}`)
     // CreateEventSourceMapping has no resource type: only the function condition can scope it.
     expect(cfn).toContainEqual({ Effect: 'Allow', Action: ['lambda:CreateEventSourceMapping'], Resource: ['*'],
-      Condition: { StringEquals: { 'lambda:FunctionArn': relay, 'aws:RequestedRegion': 'us-east-1' } } })
+      Condition: { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': 'us-east-1' } } })
+    expect(cfn).toContainEqual(expect.objectContaining({ Action: ['iam:PassRole'],
+      Resource: (['stream', 'relay', 'worker'] as const).map(name => roleArn(target, name)) }))
     const permissions = cfn.filter(statement => statement.Action.includes('lambda:AddPermission'))
     expect(permissions).toHaveLength(1)
     expect(permissions[0]?.Action.sort()).toEqual(['lambda:AddPermission', 'lambda:RemovePermission'])
@@ -222,7 +225,7 @@ describe('pilot_creates_no_iam_roles', () => {
       expect(generated.length).toBeGreaterThan(0)
       for (const resource of generated) {
         const role = JSON.stringify(resource.Properties.Roles)
-        const name = (['stream', 'relay'] as const).find(candidate => role.includes(`${candidate}Role`))
+        const name = (['stream', 'relay', 'worker'] as const).find(candidate => role.includes(`${candidate}Role`))
         expect(name, role).toBeDefined()
         const allowed = new Set(policies[name!].flatMap(statement => statement.Action))
         for (const statement of resource.Properties.PolicyDocument.Statement) {
@@ -244,6 +247,13 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(relayActions).toContain('sqs:SendMessage')
     expect(relayActions).not.toContain('dynamodb:PutItem')
     expect(policies.stream.flatMap(statement => statement.Action).some(action => action.startsWith('sqs:'))).toBe(false)
+    const worker = policies.worker.flatMap(statement => statement.Action)
+    expect(worker).not.toContain('sqs:SendMessage')
+    expect(worker).not.toContain('dynamodb:Scan')
+    expect(worker).not.toContain('dynamodb:DeleteItem')
+    expect(worker).not.toContain('dynamodb:Query')
+    const consume = policies.worker.find(statement => statement.Action.includes('sqs:ReceiveMessage'))
+    expect(consume?.Resource).toEqual([`arn:aws:sqs:us-east-1:111111111111:${NAMES.turnQueue}`])
   })
 
   test('the operator can only pass the cloudformation role', () => {
@@ -260,3 +270,35 @@ describe('pilot_creates_no_iam_roles', () => {
     for (const statement of operator) expect(statement.Resource).not.toContain('*')
   })
 })
+
+test('pilot_template_exposes_the_timing_invariant', () => {
+  const { template } = synthPilot()
+  const functions = Object.values(template.findResources('AWS::Lambda::Function')).map(fn => fn.Properties)
+  const byName = (name: string) => functions.find(fn => fn.FunctionName === name)
+  expect(byName(NAMES.workerFunction)).toMatchObject({ Timeout: TIMING.workerTimeoutSeconds,
+    Environment: { Variables: { ARTURIA_ENVIRONMENT: 'pilot', ARTURIA_PROVIDER_MODE: 'fixture' } } })
+  expect(byName(NAMES.workerFunction)?.ReservedConcurrentExecutions).toBeUndefined()
+  expect(byName(NAMES.relayFunction)).toMatchObject({ Timeout: TIMING.relayTimeoutSeconds })
+  const queue = Object.values(template.findResources('AWS::SQS::Queue')).map(q => q.Properties)
+    .find(q => q.QueueName === NAMES.turnQueue)
+  expect(queue).toMatchObject({ VisibilityTimeout: TIMING.turnVisibilitySeconds, MessageRetentionPeriod: 14 * 86_400,
+    RedrivePolicy: { maxReceiveCount: TIMING.turnMaxReceives } })
+  expect(queue!.VisibilityTimeout).toBeGreaterThanOrEqual(6 * byName(NAMES.workerFunction)!.Timeout)
+  const mapping = Object.values(template.findResources('AWS::Lambda::EventSourceMapping')).map(m => m.Properties)
+    .filter(m => m.ScalingConfig)
+  expect(mapping).toHaveLength(1)
+  expect(mapping[0]).toMatchObject({ BatchSize: 1, FunctionResponseTypes: ['ReportBatchItemFailures'], ScalingConfig: { MaximumConcurrency: 2 } })
+}, 20_000)
+
+test('sse_lambda_timeout_below_integration', () => {
+  const { template } = synthPilot()
+  const stream = Object.values(template.findResources('AWS::Lambda::Function')).map(fn => fn.Properties)
+    .find(fn => fn.FunctionName === NAMES.streamFunction)
+  const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).map(m => m.Properties)
+    .filter(m => m.HttpMethod === 'GET' && m.Integration?.ResponseTransferMode === 'STREAM')
+  expect(methods).toHaveLength(1)
+  const [method] = methods
+  expect(stream?.Timeout).toBe(TIMING.sseFunctionTimeoutSeconds)
+  expect(method?.Integration.TimeoutInMillis).toBe(TIMING.sseIntegrationTimeoutSeconds * 1000)
+  expect(stream!.Timeout * 1000).toBeLessThan(method!.Integration.TimeoutInMillis)
+}, 20_000)

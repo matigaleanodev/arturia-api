@@ -4,6 +4,7 @@
 import { Duration, aws_apigateway as gateway, aws_cognito as cognito, aws_dynamodb as dynamodb,
   aws_iam as iam, aws_lambda as lambda } from 'aws-cdk-lib'
 import type { Construct } from 'constructs'
+import { TIMING } from '../src/config/timing.ts'
 import { ARTURIA_ACCESS_SCOPE } from '../src/identity/actor.ts'
 
 interface ChatStreamProps {
@@ -23,7 +24,7 @@ export function addChatStream(scope: Construct, { table, pool, clientId, code, c
     endpointConfiguration: { types: [gateway.EndpointType.REGIONAL] }, cloudWatchRole: false,
   })
   const reader = new lambda.Function(scope, 'StreamDelivery', {
-    runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code, timeout: Duration.seconds(28),
+    runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code, timeout: Duration.seconds(TIMING.sseFunctionTimeoutSeconds),
     memorySize: 256, reservedConcurrentExecutions: concurrency, role, functionName,
     environment: { ARTURIA_TABLE_NAME: table.tableName, ARTURIA_CLIENT_ID: clientId },
   })
@@ -33,7 +34,7 @@ export function addChatStream(scope: Construct, { table, pool, clientId, code, c
   const authorizer = new gateway.CognitoUserPoolsAuthorizer(scope, 'ApiAccess', { cognitoUserPools: [pool] })
   api.root.resourceForPath('/v1/scopes/{scopeId}/turns/{turnId}/events').addMethod('GET',
     new gateway.LambdaIntegration(reader, { responseTransferMode: gateway.ResponseTransferMode.STREAM,
-      timeout: Duration.seconds(29), allowTestInvoke: false }),
+      timeout: Duration.seconds(TIMING.sseIntegrationTimeoutSeconds), allowTestInvoke: false }),
     { authorizer, authorizationScopes: [ARTURIA_ACCESS_SCOPE] })
   for (const [type, code, message] of [
     [gateway.ResponseType.UNAUTHORIZED, 'UNAUTHENTICATED', 'Se requiere una sesión válida.'],

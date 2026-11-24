@@ -3,13 +3,15 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { Aws, CfnOutput, CliCredentialsStackSynthesizer, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
+import { Aws, CfnOutput, CliCredentialsStackSynthesizer, Duration, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
 import { addChatStream } from './chat-stream.ts'
 import {
   ARTIFACT_BUCKET, ARTIFACT_PREFIX, BUNDLES, NAMES, STACKS, SYNTHETIC_ACCOUNT, roleArn, type BundleName, type RoleName, type Target,
 } from './delivery.ts'
 import { addIdentity } from './identity.ts'
 import { addOutbox } from './outbox.ts'
+import { addWorker } from './worker.ts'
+import { TIMING } from '../src/config/timing.ts'
 
 export interface PilotTarget {
   readonly synthetic: boolean
@@ -69,12 +71,13 @@ export function createPilotStack(app: App, target: PilotTarget) {
   const { userPool, client } = addIdentity(stack)
   const relay = new lambda.Function(stack, 'OutboxRelay', {
     functionName: NAMES.relayFunction, runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler',
-    code: code('relay'), role: role('relay'),
+    code: code('relay'), role: role('relay'), timeout: Duration.seconds(TIMING.relayTimeoutSeconds),
   })
-  const { table } = addOutbox(stack, relay, {
+  const { table, turnQueue } = addOutbox(stack, relay, {
     table: NAMES.table, turnQueue: NAMES.turnQueue,
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
+  addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction })
   addChatStream(stack, {
     table, pool: userPool, clientId: client.userPoolClientId,
     code: code('stream'), role: role('stream'), functionName: NAMES.streamFunction,
