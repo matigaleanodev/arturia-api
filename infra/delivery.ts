@@ -6,6 +6,7 @@
 // stack only imports them and creates no IAM. No account ID lives here: every ARN is built from a
 // target, either CloudFormation pseudo parameters or values supplied by the operator.
 
+import { HTTP_TABLE_ACTIONS } from './chat-api.ts'
 import { WORKER_TABLE_ACTIONS } from './worker.ts'
 
 /** One rolldown entry per Lambda handler. Output: `<outdir>/<name>/index.cjs`. */
@@ -31,6 +32,7 @@ export const SYNTHETIC_ACCOUNT = '000000000000'
 const P = `${STACKS.pilot}-`
 export const NAMES = {
   streamFunction: `${P}stream`,
+  httpFunction: `${P}http`,
   relayFunction: `${P}relay`,
   workerFunction: `${P}worker`,
   table: `${P}chat`,
@@ -40,7 +42,7 @@ export const NAMES = {
 } as const
 
 /** Roles created by the foundation. */
-export const ROLE_NAMES = ['stream', 'relay', 'worker', 'cloudformation'] as const
+export const ROLE_NAMES = ['stream', 'relay', 'worker', 'http', 'cloudformation'] as const
 export type RoleName = (typeof ROLE_NAMES)[number]
 export const BOUNDARY_NAME = `${P}boundary`
 
@@ -83,7 +85,7 @@ const passTo = (service: string): Condition => ({ StringEquals: { 'iam:PassedToS
 export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
   const a = arns(t)
   const queues = [NAMES.turnQueue, NAMES.turnDeadLetters, NAMES.relayDeadLetters].map(a.queue)
-  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
+  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction), a.fn(NAMES.httpFunction)]
   const consumers = [a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
   const sendTo = (queue: string) =>
     allow(['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [a.queue(queue)])
@@ -110,6 +112,11 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       // The SQS event source polls with the function role.
       allow(['sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueUrl', 'sqs:DeleteMessage',
         'sqs:GetQueueAttributes'], [a.queue(NAMES.turnQueue)]),
+    ],
+    // REST proxy handler: transactional writes and reads of the chat table only.
+    http: [
+      allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.httpFunction)]),
+      allow([...HTTP_TABLE_ACTIONS], [a.table]),
     ],
     cloudformation: [
       allow(['s3:GetObject'], [a.artifacts]),
@@ -152,7 +159,8 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       allow(['lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping'],
         [a.eventSourceMappings], { StringEquals: { 'lambda:FunctionArn': consumers } }),
       allow(['lambda:GetEventSourceMapping'], [a.eventSourceMappings]),
-      allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay'), roleArn(t, 'worker')], passTo('lambda.amazonaws.com')),
+      allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay'), roleArn(t, 'worker'), roleArn(t, 'http')],
+        passTo('lambda.amazonaws.com')),
     ],
   }
 }

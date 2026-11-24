@@ -3,8 +3,8 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { Aws, CfnOutput, CliCredentialsStackSynthesizer, Duration, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
-import { addChatStream } from './chat-stream.ts'
+import { Aws, CfnOutput, CfnParameter, CliCredentialsStackSynthesizer, Duration, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
+import { addChatApi } from './chat-api.ts'
 import {
   ARTIFACT_BUCKET, ARTIFACT_PREFIX, BUNDLES, NAMES, STACKS, SYNTHETIC_ACCOUNT, roleArn, type BundleName, type RoleName, type Target,
 } from './delivery.ts'
@@ -12,6 +12,7 @@ import { addIdentity } from './identity.ts'
 import { addOutbox } from './outbox.ts'
 import { addWorker } from './worker.ts'
 import { TIMING } from '../src/config/timing.ts'
+import { ALLOWED_ORIGIN_PATTERN } from '../src/http/cors.ts'
 
 export interface PilotTarget {
   readonly synthetic: boolean
@@ -78,9 +79,14 @@ export function createPilotStack(app: App, target: PilotTarget) {
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
   addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction })
-  addChatStream(stack, {
-    table, pool: userPool, clientId: client.userPoolClientId,
-    code: code('stream'), role: role('stream'), functionName: NAMES.streamFunction,
+  // Exact browser origin. 13.6 derives it from the distribution, like the Cognito callback URLs.
+  const allowedOrigin = new CfnParameter(stack, 'AllowedOrigin', {
+    type: 'String', allowedPattern: ALLOWED_ORIGIN_PATTERN, description: 'Exact HTTPS origin of the web client',
+  })
+  addChatApi(stack, {
+    table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: allowedOrigin.valueAsString,
+    httpCode: code('http'), httpRole: role('http'), httpFunctionName: NAMES.httpFunction,
+    streamCode: code('stream'), streamRole: role('stream'), streamFunctionName: NAMES.streamFunction,
   })
   if (target.synthetic) new CfnOutput(stack, 'SyntheticSynth', { value: 'true', description: 'Test synthesis: not deployable' })
   return stack

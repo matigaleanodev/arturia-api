@@ -13,6 +13,7 @@ import { createGenerationWorker } from '../../src/chat/generate.worker.js'
 import { createWorkerHandler } from '../../src/chat/generate.lambda.js'
 import { createChat } from '../../src/chat/turns.js'
 import { ChatStore, scopePartition, turnKey } from '../../src/chat/turns.store.js'
+import { streamRoute } from '../../src/chat/stream.http.js'
 import { createLambdaAdapter, type RestEvent } from '../../src/http/lambda-adapter.js'
 import { publishOutbox } from '../../src/jobs/outbox.js'
 import { FIXTURE_BLOCKS, pilotFixture } from '../../src/models/fixture-provider.js'
@@ -21,6 +22,7 @@ import { integrationDatabase } from '../support/dynamodb.js'
 import { TestQueue } from '../support/test-queue.js'
 
 const clientId = 'fixtureclient0123456789abcd'
+const ORIGIN = 'https://d111111abcdef8.cloudfront.net'
 const personal = 'fixture-personal'
 const work = 'fixture-work'
 const secret = 'TEXTO-PRIVADO-DEL-USUARIO-7f3a'
@@ -48,7 +50,7 @@ function event(httpMethod: string, resource: string, pathParameters: Record<stri
     requestContext: { requestId: options.requestId ?? randomUUID(), authorizer: options.claims ? { claims: options.claims } : null },
   }
 }
-const adapter = (target = store) => createLambdaAdapter({ chat: createChat(target), identity: target, clientId,
+const adapter = (target = store) => createLambdaAdapter({ chat: createChat(target), identity: target, clientId, allowedOrigin: ORIGIN,
   log: createLog(line => lines.push(line)) })
 const parse = (result: { body: string }) => JSON.parse(result.body) as Record<string, unknown>
 
@@ -87,7 +89,8 @@ test('http_handler_maps_contract_status_and_errors', async () => {
   const claims = claimsFor(users.a)
   const expectError = (result: Awaited<ReturnType<typeof handle>>, status: number, code: string, requestId: string) => {
     expect(result.statusCode).toBe(status)
-    expect(result.headers).toEqual({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+    expect(result.headers).toEqual({ 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': ORIGIN, Vary: 'Origin' })
     expect(parse(result)).toEqual({ code, message: expect.any(String), requestId })
   }
   const { conversationId, turnId } = await acceptTurn(handle)
@@ -254,6 +257,26 @@ test('logs_never_include_message_text', async () => {
   }
 })
 
+test('http_responses_carry_cors_for_the_configured_origin_only', async () => {
+  const handle = adapter()
+  const claims = claimsFor(users.a)
+  const broken = adapter(new Proxy(store, { get: (target, key) => key === 'db'
+    ? { send: async () => { throw new Error('simulated storage failure') } } : Reflect.get(target, key) }))
+  const results = [
+    await handle(event('POST', '/conversations', { scopeId: personal }, { claims, body: {} })),
+    await handle(event('GET', '/conversations', { scopeId: personal }, {})),
+    await handle(event('GET', '/conversations', { scopeId: personal }, { claims, headers: { Origin: 'https://evil.example.com' } })),
+    await handle(event('POST', '/conversations', { scopeId: personal }, { claims, raw: '{not json' })),
+    await handle(event('GET', '/unknown', { scopeId: personal }, { claims })),
+    await broken(event('GET', '/conversations', { scopeId: personal }, { claims })),
+  ]
+  expect(results.map(result => result.statusCode)).toEqual([201, 401, 200, 400, 404, 500])
+  for (const result of results) {
+    expect(result.headers).toMatchObject({ 'Access-Control-Allow-Origin': ORIGIN, Vary: 'Origin', 'Cache-Control': 'no-store' })
+    expect(JSON.stringify(result.headers)).not.toContain('evil.example.com')
+  }
+})
+
 describe('packaged handlers', () => {
   let outdir: string
   beforeAll(() => {
@@ -278,7 +301,27 @@ describe('packaged handlers', () => {
     return { result: result && JSON.parse(result.slice(10)), thrown: thrown?.slice(10), logs: output.filter(line => line.startsWith('{')),
       stderr: run.stderr, output: run.stdout }
   }
-  const httpEnv = () => ({ ARTURIA_TABLE_NAME: store.tableName, ARTURIA_CLIENT_ID: clientId })
+  const httpEnv = () => ({ ARTURIA_TABLE_NAME: store.tableName, ARTURIA_CLIENT_ID: clientId, ARTURIA_ALLOWED_ORIGIN: ORIGIN })
+  // Streaming handlers run under a stub of the Lambda streaming runtime that records the metadata.
+  function invokeStream(payload: unknown, variables: Record<string, string>) {
+    const driver = 'const {PassThrough}=require("node:stream");let meta;const chunks=[];' +
+      'globalThis.awslambda={streamifyResponse:h=>h,HttpResponseStream:{from(o,m){meta=m;return o}}};' +
+      'const m=require(process.argv[1]);const out=new PassThrough();out.on("data",c=>chunks.push(c));const end=Date.now()+28000;' +
+      'm.handler(JSON.parse(process.argv[2]),out,{getRemainingTimeInMillis:()=>end-Date.now()}).then(' +
+      '()=>process.stdout.write("@@RESULT@@"+JSON.stringify({meta,body:Buffer.concat(chunks).toString()})+"\\n"),' +
+      'e=>{process.stdout.write("@@THROWN@@"+e.message+"\\n");process.exitCode=1})'
+    const run = spawnSync(process.execPath, ['-e', driver, join(outdir, 'stream', 'index.cjs'), JSON.stringify(payload)], {
+      encoding: 'utf8', timeout: 40_000, env: {
+        PATH: process.env.PATH ?? '', AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_DYNAMODB: inject('integrationDatabase').endpoint,
+        AWS_ACCESS_KEY_ID: 'ArturiaLocal', AWS_SECRET_ACCESS_KEY: 'synthetic-local-only', AWS_MAX_ATTEMPTS: '1', ...variables,
+      } })
+    const result = run.stdout.split('\n').find(line => line.startsWith('@@RESULT@@'))
+    return { result: result ? JSON.parse(result.slice(10)) as { meta: { statusCode: number; headers: Record<string, string> }; body: string } : undefined,
+      stderr: run.stderr }
+  }
+  const streamEvent = (scopeId: string, turnId: string, claims?: Record<string, unknown>) => ({
+    httpMethod: 'GET', resource: streamRoute, pathParameters: { scopeId, turnId }, queryStringParameters: { after: '0' },
+    requestContext: { requestId: randomUUID(), authorizer: claims ? { claims } : null } })
   const workerEnv = (mode: string) => ({ ARTURIA_TABLE_NAME: store.tableName, ARTURIA_ENVIRONMENT: 'pilot', ARTURIA_PROVIDER_MODE: mode })
 
   test('bundled_http_turn_completes_with_one_bundled_worker_attempt', async () => {
@@ -315,7 +358,36 @@ describe('packaged handlers', () => {
     expect(first.logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
       code: 'TURN_DONE', turnId, attemptId: row!.attemptId }))
     expect(accepted.logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ code: 'HTTP_OK', status: 202, turnId }))
-  }, 60_000)
+    for (const run of [created, accepted, snapshot]) {
+      expect(run.result.headers).toMatchObject({ 'Access-Control-Allow-Origin': ORIGIN, 'Cache-Control': 'no-store' })
+    }
+    // sse_metadata_carries_cors_and_no_store: the packaged streaming handler, same session.
+    const sse = invokeStream(streamEvent(personal, turnId, claims), httpEnv())
+    expect(sse.result?.meta, sse.stderr).toEqual({ statusCode: 200, headers: { 'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': ORIGIN, Vary: 'Origin' } })
+    for (const block of FIXTURE_BLOCKS) expect(sse.result!.body).toContain(JSON.stringify(block).slice(1, -1))
+  }, 90_000)
+
+  test('bundled_anonymous_requests_get_401_with_cors_without_dynamodb', () => {
+    // A closed port: any DynamoDB call would fail and surface as a 500, never as the 401.
+    const offline = { ...httpEnv(), AWS_ENDPOINT_URL_DYNAMODB: 'http://127.0.0.1:9' }
+    const anonymous = event('POST', '/conversations', { scopeId: personal }, { body: {}, requestId: 'fixture-anonymous' })
+    const http = invoke('http', anonymous, offline)
+    expect(http.result, http.stderr).toMatchObject({ statusCode: 401, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Cache-Control': 'no-store' } })
+    expect(JSON.parse(http.result.body)).toMatchObject({ code: 'UNAUTHENTICATED', requestId: 'fixture-anonymous' })
+    const sse = invokeStream(streamEvent(personal, randomUUID()), offline)
+    expect(sse.result?.meta, sse.stderr).toEqual({ statusCode: 401, headers: { 'Content-Type': 'application/json',
+      'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': ORIGIN, Vary: 'Origin' } })
+    // Without a valid configured origin the handlers name no origin at all.
+    for (const origin of ['*', 'http://app.example.com', '']) {
+      const variables = { ...offline, ARTURIA_ALLOWED_ORIGIN: origin }
+      const closedHttp = invoke('http', anonymous, variables)
+      expect(closedHttp.result.statusCode).toBe(500)
+      expect(closedHttp.result.headers['Access-Control-Allow-Origin']).toBeUndefined()
+      const closedSse = invokeStream(streamEvent(personal, randomUUID()), variables)
+      expect(closedSse.result?.meta.headers['Access-Control-Allow-Origin']).toBeUndefined()
+    }
+  }, 90_000)
 
   test('bundled_fail_mode_leaves_turn_queued_for_the_dlq', async () => {
     const { turnId } = await acceptTurn()
@@ -329,7 +401,7 @@ describe('packaged handlers', () => {
 
   test('bundled_handlers_fail_closed_without_configuration', () => {
     const request = event('GET', '/conversations', { scopeId: personal }, { claims: claimsFor(users.a), requestId: 'fixture-config' })
-    const http = invoke('http', request, { ARTURIA_TABLE_NAME: store.tableName, ARTURIA_CLIENT_ID: 'Bearer secret-value!' })
+    const http = invoke('http', request, { ARTURIA_TABLE_NAME: store.tableName, ARTURIA_CLIENT_ID: 'Bearer secret-value!', ARTURIA_ALLOWED_ORIGIN: ORIGIN })
     expect(http.result.statusCode).toBe(500)
     expect(JSON.parse(http.result.body)).toEqual({ code: 'INTERNAL_ERROR', message: expect.any(String), requestId: 'fixture-config' })
     expect(http.logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({

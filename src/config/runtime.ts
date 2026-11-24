@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { CORS_ORIGIN_VARIABLE, isAllowedOrigin } from '../http/cors.js'
+
 type Environment = Readonly<Record<string, string | undefined>>
 
 /** Invalid deployment configuration. The message names variables only, never their values. */
@@ -13,7 +15,7 @@ export class ConfigError extends Error {
 
 export const PROVIDER_MODES = ['fixture', 'fail'] as const
 export type ProviderMode = typeof PROVIDER_MODES[number]
-export interface HttpRuntime { readonly tableName: string; readonly clientId: string }
+export interface HttpRuntime { readonly tableName: string; readonly clientId: string; readonly allowedOrigin: string }
 export interface WorkerRuntime { readonly tableName: string; readonly environment: string; readonly providerMode: ProviderMode }
 
 const tableName = /^[A-Za-z0-9_.-]{3,255}$/
@@ -34,7 +36,10 @@ function reader(env: Environment) {
 
 export function loadHttpRuntime(env: Environment): HttpRuntime {
   const { read, done } = reader(env)
-  const runtime = { tableName: read('ARTURIA_TABLE_NAME', v => tableName.test(v)), clientId: read('ARTURIA_CLIENT_ID', v => clientId.test(v)) }
+  const runtime = {
+    tableName: read('ARTURIA_TABLE_NAME', v => tableName.test(v)), clientId: read('ARTURIA_CLIENT_ID', v => clientId.test(v)),
+    allowedOrigin: read(CORS_ORIGIN_VARIABLE, isAllowedOrigin),
+  }
   done()
   return runtime
 }

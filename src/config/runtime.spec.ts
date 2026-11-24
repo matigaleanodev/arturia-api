@@ -5,7 +5,8 @@ import { expect, test } from 'vitest'
 import { pilotFixture, FIXTURE_BLOCKS, FIXTURE_INTERVAL_MS } from '../models/fixture-provider.js'
 import { ConfigError, loadHttpRuntime, loadWorkerRuntime, memoize } from './runtime.js'
 
-const http = { ARTURIA_TABLE_NAME: 'arturia-pilot-table', ARTURIA_CLIENT_ID: 'fixtureclient0123456789abcd' }
+const http = { ARTURIA_TABLE_NAME: 'arturia-pilot-table', ARTURIA_CLIENT_ID: 'fixtureclient0123456789abcd',
+  ARTURIA_ALLOWED_ORIGIN: 'https://d111111abcdef8.cloudfront.net' }
 const worker = { ARTURIA_TABLE_NAME: 'arturia-pilot-table', ARTURIA_ENVIRONMENT: 'pilot', ARTURIA_PROVIDER_MODE: 'fixture' }
 const failure = (load: () => unknown) => {
   try { load() } catch (error) { return error }
@@ -13,10 +14,12 @@ const failure = (load: () => unknown) => {
 }
 
 test('config_missing_or_invalid_fails_closed', () => {
-  expect(loadHttpRuntime(http)).toEqual({ tableName: http.ARTURIA_TABLE_NAME, clientId: http.ARTURIA_CLIENT_ID })
+  expect(loadHttpRuntime(http)).toEqual({ tableName: http.ARTURIA_TABLE_NAME, clientId: http.ARTURIA_CLIENT_ID,
+    allowedOrigin: http.ARTURIA_ALLOWED_ORIGIN })
   expect(loadWorkerRuntime(worker)).toEqual({ tableName: worker.ARTURIA_TABLE_NAME, environment: 'pilot', providerMode: 'fixture' })
   const cases: [() => unknown, string[]][] = [
-    [() => loadHttpRuntime({}), ['ARTURIA_TABLE_NAME', 'ARTURIA_CLIENT_ID']],
+    [() => loadHttpRuntime({}), ['ARTURIA_TABLE_NAME', 'ARTURIA_CLIENT_ID', 'ARTURIA_ALLOWED_ORIGIN']],
+    [() => loadHttpRuntime({ ...http, ARTURIA_ALLOWED_ORIGIN: '*' }), ['ARTURIA_ALLOWED_ORIGIN']],
     [() => loadHttpRuntime({ ...http, ARTURIA_TABLE_NAME: ' ' }), ['ARTURIA_TABLE_NAME']],
     [() => loadHttpRuntime({ ...http, ARTURIA_TABLE_NAME: 'tabla con espacios' }), ['ARTURIA_TABLE_NAME']],
     [() => loadHttpRuntime({ ...http, ARTURIA_CLIENT_ID: 'Bearer secret-value!' }), ['ARTURIA_CLIENT_ID']],

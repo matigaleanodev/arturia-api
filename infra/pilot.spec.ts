@@ -13,6 +13,8 @@ import {
   operatorPolicy, policy, roleArn, rolePolicies, type Statement, type Target,
 } from './delivery.ts'
 import { TIMING } from '../src/config/timing.ts'
+import { ALLOWED_ORIGIN_PATTERN } from '../src/http/cors.ts'
+import { HTTP_TABLE_ACTIONS } from './chat-api.ts'
 import { FoundationStack } from './foundation-stack.ts'
 import { createPilotStack, resolvePilotTarget, type PilotTarget } from './pilot.ts'
 
@@ -46,7 +48,7 @@ test('pilot_synth_with_code_assets_succeeds', () => {
   expect(assembly.manifest.missing ?? []).toEqual([])
   const functions = template.findResources('AWS::Lambda::Function')
   const names = Object.values(functions).map(fn => fn.Properties.FunctionName).sort()
-  expect(names).toEqual([NAMES.relayFunction, NAMES.streamFunction, NAMES.workerFunction].sort())
+  expect(names).toEqual([NAMES.httpFunction, NAMES.relayFunction, NAMES.streamFunction, NAMES.workerFunction].sort())
   for (const fn of Object.values(functions)) expect(fn.Properties.Code.S3Key).toBeDefined()
   template.resourceCountIs('AWS::Cognito::UserPool', 1)
   template.resourceCountIs('AWS::DynamoDB::Table', 1)
@@ -146,8 +148,8 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(types.filter(type => type.endsWith('Policy'))).toEqual([])
     const roles = Object.values(template.findResources('AWS::Lambda::Function'))
       .map(fn => JSON.stringify(fn.Properties.Role)).sort()
-    expect(roles).toHaveLength(3)
-    ;(['relay', 'stream', 'worker'] as const).forEach((name, index) => {
+    expect(roles).toHaveLength(4)
+    ;(['http', 'relay', 'stream', 'worker'] as const).forEach((name, index) => {
       expect(roles[index]).toContain(`:${SYNTHETIC_ACCOUNT}:role/arturia-pilot-${name}`)
     })
     expect(json.Parameters?.BootstrapVersion).toBeUndefined()
@@ -207,7 +209,9 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(cfn).toContainEqual({ Effect: 'Allow', Action: ['lambda:CreateEventSourceMapping'], Resource: ['*'],
       Condition: { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': 'us-east-1' } } })
     expect(cfn).toContainEqual(expect.objectContaining({ Action: ['iam:PassRole'],
-      Resource: (['stream', 'relay', 'worker'] as const).map(name => roleArn(target, name)) }))
+      Resource: (['stream', 'relay', 'worker', 'http'] as const).map(name => roleArn(target, name)) }))
+    const functions = cfn.find(statement => statement.Action.includes('lambda:CreateFunction'))
+    expect(functions?.Resource).toContain(`arn:aws:lambda:us-east-1:111111111111:function:${NAMES.httpFunction}`)
     const permissions = cfn.filter(statement => statement.Action.includes('lambda:AddPermission'))
     expect(permissions).toHaveLength(1)
     expect(permissions[0]?.Action.sort()).toEqual(['lambda:AddPermission', 'lambda:RemovePermission'])
@@ -225,7 +229,7 @@ describe('pilot_creates_no_iam_roles', () => {
       expect(generated.length).toBeGreaterThan(0)
       for (const resource of generated) {
         const role = JSON.stringify(resource.Properties.Roles)
-        const name = (['stream', 'relay', 'worker'] as const).find(candidate => role.includes(`${candidate}Role`))
+        const name = (['stream', 'relay', 'worker', 'http'] as const).find(candidate => role.includes(`${candidate}Role`))
         expect(name, role).toBeDefined()
         const allowed = new Set(policies[name!].flatMap(statement => statement.Action))
         for (const statement of resource.Properties.PolicyDocument.Statement) {
@@ -252,6 +256,10 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(worker).not.toContain('dynamodb:Scan')
     expect(worker).not.toContain('dynamodb:DeleteItem')
     expect(worker).not.toContain('dynamodb:Query')
+    expect(policies.http).toContainEqual({ Effect: 'Allow', Action: [...HTTP_TABLE_ACTIONS], Resource: [table] })
+    const http = policies.http.flatMap(statement => statement.Action)
+    for (const action of ['dynamodb:Scan', 'dynamodb:DeleteItem', 'dynamodb:BatchWriteItem']) expect(http).not.toContain(action)
+    expect(http.some(action => action.startsWith('sqs:') || action.startsWith('lambda:'))).toBe(false)
     const consume = policies.worker.find(statement => statement.Action.includes('sqs:ReceiveMessage'))
     expect(consume?.Resource).toEqual([`arn:aws:sqs:us-east-1:111111111111:${NAMES.turnQueue}`])
   })
@@ -301,4 +309,21 @@ test('sse_lambda_timeout_below_integration', () => {
   expect(stream?.Timeout).toBe(TIMING.sseFunctionTimeoutSeconds)
   expect(method?.Integration.TimeoutInMillis).toBe(TIMING.sseIntegrationTimeoutSeconds * 1000)
   expect(stream!.Timeout * 1000).toBeLessThan(method!.Integration.TimeoutInMillis)
+}, 20_000)
+
+test('pilot_api_takes_an_exact_allowed_origin', () => {
+  const { template } = synthPilot()
+  const json = template.toJSON()
+  expect(json.Parameters.AllowedOrigin).toMatchObject({ Type: 'String', AllowedPattern: ALLOWED_ORIGIN_PATTERN })
+  const functions = Object.values(template.findResources('AWS::Lambda::Function')).map(fn => fn.Properties)
+  for (const name of [NAMES.httpFunction, NAMES.streamFunction]) {
+    expect(functions.find(fn => fn.FunctionName === name)?.Environment.Variables.ARTURIA_ALLOWED_ORIGIN).toEqual({ Ref: 'AllowedOrigin' })
+  }
+  // The RestApi resource never depends on the origin, so 13.6 can derive it from the distribution.
+  const [api] = Object.values(template.findResources('AWS::ApiGateway::RestApi'))
+  expect(JSON.stringify(api)).not.toContain('AllowedOrigin')
+  for (const response of Object.values(template.findResources('AWS::ApiGateway::GatewayResponse'))) {
+    expect(response.Properties.ResponseParameters['gatewayresponse.header.Access-Control-Allow-Origin']).toEqual(
+      { 'Fn::Join': ['', ["'", { Ref: 'AllowedOrigin' }, "'"]] })
+  }
 }, 20_000)

@@ -6,6 +6,8 @@ import type { Chat } from '../chat/turns.js'
 import { resolveVerifiedActor, type Actor, type IdentityStore } from '../identity/actor.js'
 import type { Log } from '../observability/log.js'
 import { gatewayClaims } from './auth.js'
+import { corsHeaders } from './cors.js'
+import { HTTP_ROUTES } from './routes.js'
 
 /** API Gateway REST proxy event, limited to the fields the adapter reads. */
 export interface RestEvent {
@@ -24,21 +26,19 @@ export interface RestResult { readonly statusCode: number; readonly headers: Rec
 const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
 // Same ceiling as the local transport: JSON escaping can inflate the 384 KiB text limit.
 const maxBodyBytes = 3 * 1024 * 1024
-const scope = '/v1/scopes/{scopeId}'
 type Path = Readonly<Record<string, string | undefined>>
-const routes: Record<string, (path: Path) => Record<string, string | undefined>> = {
-  [`POST ${scope}/conversations`]: () => ({ operation: 'createConversation' }),
-  [`GET ${scope}/conversations`]: () => ({ operation: 'listConversations' }),
-  [`GET ${scope}/conversations/{conversationId}`]: path => ({ operation: 'getConversation', conversationId: path.conversationId }),
-  [`POST ${scope}/conversations/{conversationId}/turns`]: path => ({ operation: 'acceptTurn', conversationId: path.conversationId }),
-  [`GET ${scope}/turns/{turnId}`]: path => ({ operation: 'getTurn', turnId: path.turnId }),
-  [`POST ${scope}/turns/{turnId}/cancel`]: path => ({ operation: 'cancelTurn', turnId: path.turnId }),
-}
+const routes = new Map(HTTP_ROUTES.map(({ method, path, operation }) => [`${method} ${path}`, (params: Path) => ({
+  operation,
+  ...(path.includes('{conversationId}') && { conversationId: params.conversationId }),
+  ...(path.includes('{turnId}') && { turnId: params.turnId }),
+})]))
 
 class InvalidRequest extends Error {}
-export const publicError = (statusCode: number, code: string, message: string, requestId: string): RestResult =>
-  ({ statusCode, headers: { ...headers }, body: JSON.stringify({ code, message, requestId }) })
-export const internalError = (requestId: string) => publicError(500, 'INTERNAL_ERROR', 'No se pudo completar la solicitud.', requestId)
+/** `cors` carries the configured origin headers; without a valid origin no origin is named. */
+export const publicError = (statusCode: number, code: string, message: string, requestId: string, cors: Record<string, string> = {}): RestResult =>
+  ({ statusCode, headers: { ...headers, ...cors }, body: JSON.stringify({ code, message, requestId }) })
+export const internalError = (requestId: string, cors?: Record<string, string>) =>
+  publicError(500, 'INTERNAL_ERROR', 'No se pudo completar la solicitud.', requestId, cors)
 
 // Single-valued, case-insensitive header. Repeated values are ambiguous and rejected.
 function header(event: RestEvent, name: string) {
@@ -61,8 +61,9 @@ function body(event: RestEvent): unknown {
 }
 
 /** Maps REST proxy events to `chatHttp`. The actor comes only from verified authorizer claims. */
-export function createLambdaAdapter(deps: { chat: Chat; identity: IdentityStore; clientId: string; log: Log }) {
+export function createLambdaAdapter(deps: { chat: Chat; identity: IdentityStore; clientId: string; allowedOrigin: string; log: Log }) {
   const { chat, identity, clientId, log } = deps
+  const cors = corsHeaders(deps.allowedOrigin)
   return async (event: RestEvent): Promise<RestResult> => {
     const requestId = event.requestContext.requestId
     // turnId correlates the request with the queue message and the worker attempt.
@@ -70,11 +71,11 @@ export function createLambdaAdapter(deps: { chat: Chat; identity: IdentityStore;
       const code = statusCode >= 400 && typeof body.code === 'string' ? body.code : 'HTTP_OK'
       const turnId = typeof body.turnId === 'string' ? body.turnId : event.pathParameters?.turnId
       log(statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info', code, { requestId, turnId, status: statusCode })
-      return { statusCode, headers: { ...headers }, body: JSON.stringify(body) }
+      return { statusCode, headers: { ...headers, ...cors }, body: JSON.stringify(body) }
     }
     const fault = (statusCode: number, code: string, message: string) => respond(statusCode, { code, message, requestId })
     try {
-      const route = routes[`${event.httpMethod} ${event.resource}`]
+      const route = routes.get(`${event.httpMethod} ${event.resource}`)
       if (!route) return fault(404, 'NOT_FOUND', 'No se encontró el recurso.')
       const path = event.pathParameters ?? {}
       const claims = gatewayClaims(event.requestContext.authorizer?.claims, clientId)

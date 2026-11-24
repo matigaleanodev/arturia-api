@@ -25,10 +25,13 @@ export interface Timing {
   readonly relayTimeoutSeconds: number
   readonly sseFunctionTimeoutSeconds: number
   readonly sseIntegrationTimeoutSeconds: number
+  /** Buffered HTTP handler, below the default REST integration timeout of 29 s. */
+  readonly httpFunctionTimeoutSeconds: number
 }
 
 const LAMBDA_MAX_SECONDS = 900
 const SQS_MAX_VISIBILITY_SECONDS = 43_200
+const REST_INTEGRATION_TIMEOUT_SECONDS = 29
 
 export function checkTiming(t: Timing): Timing {
   const broken: string[] = []
@@ -44,6 +47,7 @@ export function checkTiming(t: Timing): Timing {
   rule(t.turnRetentionDays <= 14, 'retention cannot exceed 14 days')
   rule(t.workerMaxConcurrency >= 2 && t.workerMaxConcurrency <= 1000, 'worker max concurrency must be between 2 and 1000')
   rule(t.sseFunctionTimeoutSeconds < t.sseIntegrationTimeoutSeconds, 'SSE function timeout must be below its integration timeout')
+  rule(t.httpFunctionTimeoutSeconds < REST_INTEGRATION_TIMEOUT_SECONDS, 'HTTP function timeout must be below 29 s')
   if (broken.length) throw new RangeError('Invalid timing: ' + broken.join('; '))
   return t
 }
@@ -60,4 +64,5 @@ export const TIMING: Timing = checkTiming({
   relayTimeoutSeconds: 30,
   sseFunctionTimeoutSeconds: 28,
   sseIntegrationTimeoutSeconds: 29,
+  httpFunctionTimeoutSeconds: 10,
 })

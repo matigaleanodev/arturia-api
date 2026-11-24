@@ -7,6 +7,7 @@ import { finished } from 'node:stream/promises'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { GetCommand } from '@aws-sdk/lib-dynamodb'
 import { gatewayClaims } from '../http/auth.js'
+import { corsHeaders, readAllowedOrigin } from '../http/cors.js'
 import { createStreamReader, dynamoStreamSource } from './stream.reader.js'
 import { createStreamHttp, streamError, type StreamRequest, type StreamResponse } from './stream.http.js'
 import { ChatStore } from './turns.store.js'
@@ -23,6 +24,9 @@ declare const awslambda: {
 
 const tableName = process.env.ARTURIA_TABLE_NAME!
 const clientId = process.env.ARTURIA_CLIENT_ID!
+// Without a valid configured origin no origin is named and browsers cannot read the stream.
+const allowedOrigin = readAllowedOrigin(process.env)
+const cors = allowedOrigin ? corsHeaders(allowedOrigin) : {}
 const store = new ChatStore(new DynamoDBClient({}), tableName)
 const streamHttp = createStreamHttp(createStreamReader(dynamoStreamSource(store)))
 
@@ -67,7 +71,7 @@ export const handler = awslambda.streamifyResponse(async (event, output, context
     } catch (error) {
       response = streamError(error, requestId)
     }
-    const writer = awslambda.HttpResponseStream.from(output, { statusCode: response.statusCode, headers: response.headers })
+    const writer = awslambda.HttpResponseStream.from(output, { statusCode: response.statusCode, headers: { ...response.headers, ...cors } })
     let wroteBody = false
     for await (const batch of response.body) {
       if (signal.aborted || Date.now() >= deadline) break
