@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { App, aws_iam as iam } from 'aws-cdk-lib'
@@ -13,10 +13,9 @@ import {
   operatorPolicy, policy, roleArn, rolePolicies, type Statement, type Target,
 } from './delivery.ts'
 import { TIMING } from '../src/config/timing.ts'
-import { ALLOWED_ORIGIN_PATTERN } from '../src/http/cors.ts'
 import { HTTP_TABLE_ACTIONS } from './chat-api.ts'
 import { FoundationStack } from './foundation-stack.ts'
-import { createPilotStack, resolvePilotTarget, type PilotTarget } from './pilot.ts'
+import { WEB_FIXTURE_DIR, createPilotStack, resolvePilotTarget, type PilotTarget } from './pilot.ts'
 
 const FIXTURE_BUNDLES = 'infra/fixtures/bundles'
 const target: Target = { partition: 'aws', account: '111111111111', region: 'us-east-1' }
@@ -24,7 +23,10 @@ const tmp: string[] = []
 const tempDir = () => { const dir = mkdtempSync(join(tmpdir(), 'arturia-pilot-')); tmp.push(dir); return dir }
 afterAll(() => { for (const dir of tmp) rmSync(dir, { recursive: true, force: true }) })
 
-const synthetic: PilotTarget = { synthetic: true, account: SYNTHETIC_ACCOUNT, region: 'us-east-1', bundleDir: FIXTURE_BUNDLES }
+const synthetic: PilotTarget = {
+  synthetic: true, account: SYNTHETIC_ACCOUNT, region: 'us-east-1', bundleDir: FIXTURE_BUNDLES, webDistDir: WEB_FIXTURE_DIR }
+const RUNTIME_ROLES = ['http', 'publisher', 'relay', 'stream', 'worker'] as const
+const FUNCTIONS = [NAMES.httpFunction, NAMES.publisherFunction, NAMES.relayFunction, NAMES.streamFunction, NAMES.workerFunction]
 function synthPilot(pilotTarget: PilotTarget = synthetic) {
   const app = new App({ outdir: tempDir(), analyticsReporting: false })
   const stack = createPilotStack(app, pilotTarget)
@@ -48,7 +50,7 @@ test('pilot_synth_with_code_assets_succeeds', () => {
   expect(assembly.manifest.missing ?? []).toEqual([])
   const functions = template.findResources('AWS::Lambda::Function')
   const names = Object.values(functions).map(fn => fn.Properties.FunctionName).sort()
-  expect(names).toEqual([NAMES.httpFunction, NAMES.relayFunction, NAMES.streamFunction, NAMES.workerFunction].sort())
+  expect(names).toEqual([...FUNCTIONS].sort())
   for (const fn of Object.values(functions)) expect(fn.Properties.Code.S3Key).toBeDefined()
   template.resourceCountIs('AWS::Cognito::UserPool', 1)
   template.resourceCountIs('AWS::DynamoDB::Table', 1)
@@ -61,8 +63,10 @@ test('assets_target_foundation_bucket_and_prefix', () => {
   expect(Object.keys(manifest.dockerImages ?? {})).toEqual([])
   const files = Object.values(manifest.files) as { source: { path: string; packaging?: string }; destinations: Record<string, { bucketName: string; objectKey: string; assumeRoleArn?: string }> }[]
   const zipped = files.filter(file => file.source.packaging === 'zip')
-  // One code asset per composed function; bundles not yet composed (13.3/13.4) add no assets.
-  expect(zipped).toHaveLength(Object.keys(template.findResources('AWS::Lambda::Function')).length)
+  // One code asset per function, plus the web build and the runtime configuration. The AWS CLI layer and the
+  // template itself are file assets.
+  expect(zipped).toHaveLength(Object.keys(template.findResources('AWS::Lambda::Function')).length + 2)
+  expect(files.filter(file => file.source.packaging === 'file' && !file.source.path.endsWith('.template.json'))).toHaveLength(1)
   for (const file of files) {
     for (const destination of Object.values(file.destinations)) {
       expect(destination.bucketName).toBe(`arturia-artifacts-${SYNTHETIC_ACCOUNT}-us-east-1`)
@@ -102,6 +106,9 @@ test('foundation_has_no_assets_and_retains_bucket', () => {
 
 test('pilot_real_synth_requires_account_region_and_web_dir', () => {
   const web = tempDir()
+  const webDistDir = join(web, 'dist', 'arturia', 'browser')
+  mkdirSync(webDistDir, { recursive: true })
+  cpSync(WEB_FIXTURE_DIR, webDistDir, { recursive: true })
   const pilot = { 'arturia:target': 'pilot' }
   expect(runApp(pilot).stderr).toContain('arturia:account')
   expect(runApp({ ...pilot, 'arturia:account': '12345' }).stderr).toContain('arturia:account')
@@ -120,7 +127,7 @@ test('pilot_real_synth_requires_account_region_and_web_dir', () => {
     writeFileSync(join(bundles, name, 'index.cjs'), 'exports.handler=async()=>{}')
   }
   expect(resolvePilotTarget(read(located), { ARTURIA_WEB_DIR: web }, bundles)).toEqual({
-    synthetic: false, account: target.account, region: 'us-east-1', bundleDir: bundles, webDir: web })
+    synthetic: false, account: target.account, region: 'us-east-1', bundleDir: bundles, webDir: web, webDistDir })
   const { stack, template } = synthPilot(resolvePilotTarget(read(located), { ARTURIA_WEB_DIR: web }, bundles))
   expect(stack.stackName).toBe(STACKS.pilot)
   expect(template.toJSON().Outputs?.SyntheticSynth).toBeUndefined()
@@ -143,13 +150,18 @@ describe('pilot_creates_no_iam_roles', () => {
     const { template } = synthPilot()
     const json = template.toJSON()
     const types = Object.values(json.Resources as Record<string, { Type: string }>).map(resource => resource.Type)
-    expect(types.filter(type => type.startsWith('AWS::IAM::') || type.startsWith('Custom::'))).toEqual([])
-    // Grants on imported roles must not fall back to resource policies outside the foundation model.
-    expect(types.filter(type => type.endsWith('Policy'))).toEqual([])
+    expect(types.filter(type => type.startsWith('AWS::IAM::'))).toEqual([])
+    // The only custom resources publish the web build and its configuration with the predefined publisher role.
+    expect(types.filter(type => type.startsWith('Custom::'))).toEqual(Array(3).fill('Custom::CDKBucketDeployment'))
+    // Grants on imported roles must not fall back to resource policies: the only resource policy is the web bucket's
+    // (CloudFront through OAC plus TLS), and the CloudFront policies are configuration, not IAM.
+    expect(types.filter(type => type.endsWith('Policy')).sort()).toEqual([
+      'AWS::CloudFront::CachePolicy', 'AWS::CloudFront::ResponseHeadersPolicy', 'AWS::CloudFront::ResponseHeadersPolicy',
+      'AWS::S3::BucketPolicy'])
     const roles = Object.values(template.findResources('AWS::Lambda::Function'))
       .map(fn => JSON.stringify(fn.Properties.Role)).sort()
-    expect(roles).toHaveLength(4)
-    ;(['http', 'relay', 'stream', 'worker'] as const).forEach((name, index) => {
+    expect(roles).toHaveLength(RUNTIME_ROLES.length)
+    RUNTIME_ROLES.forEach((name, index) => {
       expect(roles[index]).toContain(`:${SYNTHETIC_ACCOUNT}:role/arturia-pilot-${name}`)
     })
     expect(json.Parameters?.BootstrapVersion).toBeUndefined()
@@ -190,10 +202,11 @@ describe('pilot_creates_no_iam_roles', () => {
             expect(statement.Condition?.StringEquals?.['aws:RequestedRegion'], name).toBe(target.region)
           } else {
             expect(resource.startsWith('arn:aws:'), resource).toBe(true)
-            // S3 and API Gateway ARNs carry no account and IAM no region; the rest stay in the target account and region.
+            // S3 and API Gateway ARNs carry no account, IAM and CloudFront no region; the rest stay in the target account and region.
             if (resource.startsWith('arn:aws:iam:')) expect(resource, name).toMatch(/^arn:aws:iam::111111111111:role\/arturia-pilot-/)
+            else if (resource.startsWith('arn:aws:cloudfront:')) expect(resource, name).toMatch(/^arn:aws:cloudfront::111111111111:/)
             else if (!/^arn:aws:(s3|apigateway):/.test(resource)) expect(resource, name).toMatch(/^arn:aws:[a-z0-9-]+:us-east-1:111111111111:/)
-            if (resource.startsWith('arn:aws:s3:::')) expect(resource.startsWith('arn:aws:s3:::arturia-artifacts-111111111111-us-east-1'), resource).toBe(true)
+            if (resource.startsWith('arn:aws:s3:::')) expect(resource, name).toMatch(/^arn:aws:s3:::arturia-(artifacts|pilot-web)-111111111111-us-east-1(\/|$)/)
           }
         }
       }
@@ -209,7 +222,7 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(cfn).toContainEqual({ Effect: 'Allow', Action: ['lambda:CreateEventSourceMapping'], Resource: ['*'],
       Condition: { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': 'us-east-1' } } })
     expect(cfn).toContainEqual(expect.objectContaining({ Action: ['iam:PassRole'],
-      Resource: (['stream', 'relay', 'worker', 'http'] as const).map(name => roleArn(target, name)) }))
+      Resource: (['stream', 'relay', 'worker', 'http', 'publisher'] as const).map(name => roleArn(target, name)) }))
     const functions = cfn.find(statement => statement.Action.includes('lambda:CreateFunction'))
     expect(functions?.Resource).toContain(`arn:aws:lambda:us-east-1:111111111111:function:${NAMES.httpFunction}`)
     const permissions = cfn.filter(statement => statement.Action.includes('lambda:AddPermission'))
@@ -227,14 +240,24 @@ describe('pilot_creates_no_iam_roles', () => {
       const policies = rolePolicies(target)
       const generated = Object.values(template.findResources('AWS::IAM::Policy'))
       expect(generated.length).toBeGreaterThan(0)
+      const publisherGrants: string[] = []
       for (const resource of generated) {
         const role = JSON.stringify(resource.Properties.Roles)
-        const name = (['stream', 'relay', 'worker', 'http'] as const).find(candidate => role.includes(`${candidate}Role`))
+        const name = RUNTIME_ROLES.find(candidate => role.includes(`${candidate}Role`))
         expect(name, role).toBeDefined()
         const allowed = new Set(policies[name!].flatMap(statement => statement.Action))
         for (const statement of resource.Properties.PolicyDocument.Statement) {
-          for (const action of [statement.Action].flat()) expect(allowed.has(action), `${name} ${action}`).toBe(true)
+          for (const action of [statement.Action].flat()) {
+            if (name === 'publisher') publisherGrants.push(action)
+            else expect(allowed.has(action), `${name} ${action}`).toBe(true)
+          }
         }
+      }
+      // BucketDeployment grants wildcard families; the publisher role keeps the subset the sync needs, never more.
+      expect(publisherGrants.length).toBeGreaterThan(0)
+      for (const action of policies.publisher.flatMap(statement => statement.Action)) {
+        if (action.startsWith('logs:')) continue
+        expect(publisherGrants.some(grant => glob(grant).test(action)), `publisher ${action}`).toBe(true)
       }
     } finally {
       spy.mockRestore()
@@ -257,6 +280,14 @@ describe('pilot_creates_no_iam_roles', () => {
     expect(worker).not.toContain('dynamodb:DeleteItem')
     expect(worker).not.toContain('dynamodb:Query')
     expect(policies.http).toContainEqual({ Effect: 'Allow', Action: [...HTTP_TABLE_ACTIONS], Resource: [table] })
+    const web = 'arn:aws:s3:::arturia-pilot-web-111111111111-us-east-1'
+    expect(policies.publisher).toEqual([
+      { Effect: 'Allow', Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Resource: [`arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/${NAMES.publisherFunction}:*`] },
+      { Effect: 'Allow', Action: ['s3:GetObject'], Resource: [`arn:aws:s3:::arturia-artifacts-111111111111-us-east-1/${ARTIFACT_PREFIX}*`] },
+      { Effect: 'Allow', Action: ['s3:ListBucket'], Resource: [web] },
+      { Effect: 'Allow', Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:AbortMultipartUpload'], Resource: [`${web}/*`] },
+    ])
     const http = policies.http.flatMap(statement => statement.Action)
     for (const action of ['dynamodb:Scan', 'dynamodb:DeleteItem', 'dynamodb:BatchWriteItem']) expect(http).not.toContain(action)
     expect(http.some(action => action.startsWith('sqs:') || action.startsWith('lambda:'))).toBe(false)
@@ -311,19 +342,25 @@ test('sse_lambda_timeout_below_integration', () => {
   expect(stream!.Timeout * 1000).toBeLessThan(method!.Integration.TimeoutInMillis)
 }, 20_000)
 
-test('pilot_api_takes_an_exact_allowed_origin', () => {
-  const { template } = synthPilot()
-  const json = template.toJSON()
-  expect(json.Parameters.AllowedOrigin).toMatchObject({ Type: 'String', AllowedPattern: ALLOWED_ORIGIN_PATTERN })
-  const functions = Object.values(template.findResources('AWS::Lambda::Function')).map(fn => fn.Properties)
-  for (const name of [NAMES.httpFunction, NAMES.streamFunction]) {
-    expect(functions.find(fn => fn.FunctionName === name)?.Environment.Variables.ARTURIA_ALLOWED_ORIGIN).toEqual({ Ref: 'AllowedOrigin' })
-  }
-  // The RestApi resource never depends on the origin, so 13.6 can derive it from the distribution.
-  const [api] = Object.values(template.findResources('AWS::ApiGateway::RestApi'))
-  expect(JSON.stringify(api)).not.toContain('AllowedOrigin')
-  for (const response of Object.values(template.findResources('AWS::ApiGateway::GatewayResponse'))) {
-    expect(response.Properties.ResponseParameters['gatewayresponse.header.Access-Control-Allow-Origin']).toEqual(
-      { 'Fn::Join': ['', ["'", { Ref: 'AllowedOrigin' }, "'"]] })
-  }
-}, 20_000)
+test('cloudformation role scopes the web hosting resources', () => {
+  const cfn = rolePolicies(target).cloudformation
+  const find = (action: string) => cfn.filter(statement => statement.Action.includes(action))
+  const one = (action: string) => { const found = find(action); expect(found, action).toHaveLength(1); return found[0]! }
+  const cloudfront = (resource: string) => `arn:aws:cloudfront::111111111111:${resource}`
+  expect(one('cloudfront:CreateDistribution').Resource).toEqual([cloudfront('distribution/*')])
+  expect(one('cloudfront:CreateFunction').Resource).toEqual([cloudfront(`function/${NAMES.rewriteFunction}`)])
+  expect(one('cloudfront:CreateOriginAccessControl').Resource).toEqual([cloudfront('origin-access-control/*')])
+  expect(one('cloudfront:CreateCachePolicy').Resource).toEqual([cloudfront('cache-policy/*')])
+  expect(one('cloudfront:CreateResponseHeadersPolicy').Resource).toEqual([cloudfront('response-headers-policy/*')])
+  expect(find('cloudfront:CreateInvalidation')).toEqual([])
+  expect(one('s3:CreateBucket').Resource).toEqual(['arn:aws:s3:::arturia-pilot-web-111111111111-us-east-1'])
+  expect(cfn.filter(statement => statement.Action.some(action => /^s3:(Put|Delete|Get)Object$/.test(action)))
+    .flatMap(statement => statement.Action)).toEqual(['s3:GetObject'])
+  // CloudFormation invokes the publisher custom resource and creates its layer; nothing else is invocable.
+  expect(one('lambda:InvokeFunction').Resource).toEqual([`arn:aws:lambda:us-east-1:111111111111:function:${NAMES.publisherFunction}`])
+  expect(one('lambda:PublishLayerVersion').Resource).toEqual([`arn:aws:lambda:us-east-1:111111111111:layer:${NAMES.publisherLayer}`])
+  expect(one('lambda:GetLayerVersion').Resource).toEqual([`arn:aws:lambda:us-east-1:111111111111:layer:${NAMES.publisherLayer}:*`])
+  expect(one('lambda:CreateFunction').Resource).toContain(`arn:aws:lambda:us-east-1:111111111111:function:${NAMES.publisherFunction}`)
+  const operator = statements(operatorPolicy(target)).flatMap(statement => statement.Action)
+  expect(operator.some(action => action.startsWith('cloudfront:'))).toBe(false)
+})

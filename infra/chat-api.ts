@@ -55,7 +55,7 @@ export interface ChatApiProps {
   readonly table: dynamodb.ITable
   readonly pool: cognito.IUserPool
   readonly clientId: string
-  /** One exact HTTPS origin. May be a token (parameter or, from 13.6, the distribution domain). */
+  /** One exact HTTPS origin. May be a token: the pilot passes the web distribution's origin. */
   readonly allowedOrigin: string
   readonly httpCode: lambda.Code
   readonly streamCode: lambda.Code

@@ -3,24 +3,35 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { Aws, CfnOutput, CfnParameter, CliCredentialsStackSynthesizer, Duration, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
+import { Aws, CfnOutput, CliCredentialsStackSynthesizer, Duration, Lazy, Stack, aws_iam as iam, aws_lambda as lambda, type App } from 'aws-cdk-lib'
+import { APIGATEWAY_AUTHORIZER_CHANGE_DEPLOYMENT_LOGICAL_ID } from 'aws-cdk-lib/cx-api'
 import { addChatApi } from './chat-api.ts'
 import {
   ARTIFACT_BUCKET, ARTIFACT_PREFIX, BUNDLES, NAMES, STACKS, SYNTHETIC_ACCOUNT, roleArn, type BundleName, type RoleName, type Target,
 } from './delivery.ts'
 import { addIdentity } from './identity.ts'
 import { addOutbox } from './outbox.ts'
+import { addWebHosting, checkWebDist } from './web-hosting.ts'
 import { addWorker } from './worker.ts'
 import { TIMING } from '../src/config/timing.ts'
-import { ALLOWED_ORIGIN_PATTERN } from '../src/http/cors.ts'
 
 export interface PilotTarget {
   readonly synthetic: boolean
   readonly account: string
   readonly region: string
   readonly bundleDir: string
+  /** Web checkout (real synthesis only). */
   readonly webDir?: string
+  /** Angular production build published by the hosting. */
+  readonly webDistDir: string
+  /** Optional salt that forces a new API Gateway deployment (recovery; see README). */
+  readonly apiRedeploy?: string
 }
+
+/** Synthetic production build used by the test synthesis. */
+export const WEB_FIXTURE_DIR = 'tests/fixtures/web-dist'
+/** Angular production build inside the web checkout. */
+export const WEB_DIST_PATH = join('dist', 'arturia', 'browser')
 
 const isDirectory = (path: string) => existsSync(path) && statSync(path).isDirectory()
 
@@ -30,9 +41,15 @@ const isDirectory = (path: string) => existsSync(path) && statSync(path).isDirec
  */
 export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJS.ProcessEnv, bundleDir = 'dist/bundles'): PilotTarget {
   const read = (key: string) => { const value = context(key); return value === undefined || value === null ? undefined : String(value).trim() }
+  const apiRedeploy = read('arturia:apiRedeploy')
+  if (apiRedeploy !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(apiRedeploy)) {
+    throw new Error('Invalid arturia:apiRedeploy: use 1-64 letters, digits, dots, dashes or underscores')
+  }
+  const redeploy = apiRedeploy === undefined ? {} : { apiRedeploy }
   const mode = read('arturia:target') ?? 'synthetic'
   if (mode === 'synthetic') {
-    return { synthetic: true, account: SYNTHETIC_ACCOUNT, region: 'us-east-1', bundleDir: 'infra/fixtures/bundles' }
+    return { synthetic: true, account: SYNTHETIC_ACCOUNT, region: 'us-east-1', bundleDir: 'infra/fixtures/bundles',
+      webDistDir: WEB_FIXTURE_DIR, ...redeploy }
   }
   if (mode !== 'pilot') throw new Error(`Invalid arturia:target "${mode}": use synthetic or pilot`)
   const account = read('arturia:account')
@@ -47,12 +64,15 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   if (!webDir || !isDirectory(webDir)) {
     throw new Error('Real pilot synthesis requires ARTURIA_WEB_DIR pointing to the web checkout')
   }
+  const webDistDir = join(webDir, WEB_DIST_PATH)
+  if (!isDirectory(webDistDir)) throw new Error(`Missing web build in ${webDistDir}: run npm run build in ARTURIA_WEB_DIR`)
+  checkWebDist(webDistDir)
   for (const name of Object.keys(BUNDLES)) {
     if (!existsSync(join(bundleDir, name, 'index.cjs'))) {
       throw new Error(`Missing Lambda bundle "${name}" in ${bundleDir}: run npm run bundle first`)
     }
   }
-  return { synthetic: false, account, region, bundleDir, webDir }
+  return { synthetic: false, account, region, bundleDir, webDir, webDistDir, ...redeploy }
 }
 
 /** Pilot composition root. Code assets go to the foundation bucket; every role is imported. */
@@ -60,16 +80,26 @@ export function createPilotStack(app: App, target: PilotTarget) {
   const stack = new Stack(app, target.synthetic ? 'ArturiaPilotSynthetic' : 'ArturiaPilot', {
     stackName: target.synthetic ? STACKS.synthetic : STACKS.pilot,
     env: { account: target.account, region: target.region },
-    description: 'Arturia pilot: chat API, delivery and identity',
+    description: 'Arturia pilot: chat API, delivery, identity and web hosting',
     synthesizer: new CliCredentialsStackSynthesizer({ fileAssetsBucketName: ARTIFACT_BUCKET, bucketPrefix: ARTIFACT_PREFIX }),
   })
+  // Off by default: without it the authorizer configuration is not part of the API deployment's logical ID, so an
+  // authorizer change would never reach the stage. Set on the stack so every App that composes the pilot gets it.
+  stack.node.setContext(APIGATEWAY_AUTHORIZER_CHANGE_DEPLOYMENT_LOGICAL_ID, true)
   // Same concrete account as the stack: with a token account CDK treats the role as foreign and
   // moves the dropped grants into resource policies. The synthesized template is never versioned.
   const deployed: Target = { partition: Aws.PARTITION, account: target.account, region: target.region }
   const role = (name: RoleName) => iam.Role.fromRoleArn(stack, `${name}Role`, roleArn(deployed, name), { mutable: false })
   const code = (name: BundleName) => lambda.Code.fromAsset(join(target.bundleDir, name))
 
-  const { userPool, client } = addIdentity(stack)
+  // The browser origin is the distribution's domain. The distribution needs the API id (CSP) and the API needs the
+  // origin (CORS), so the origin is read lazily once hosting exists; the CloudFormation graph has no cycle.
+  let hosting: ReturnType<typeof addWebHosting> | undefined
+  const webOrigin = Lazy.string({ produce: () => {
+    if (!hosting) throw new Error('Web hosting must be composed before synthesis')
+    return hosting.origin
+  } })
+  const { userPool, client, domain } = addIdentity(stack, { callbackUrl: `${webOrigin}/`, logoutUrl: `${webOrigin}/` })
   const relay = new lambda.Function(stack, 'OutboxRelay', {
     functionName: NAMES.relayFunction, runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler',
     code: code('relay'), role: role('relay'), timeout: Duration.seconds(TIMING.relayTimeoutSeconds),
@@ -79,14 +109,16 @@ export function createPilotStack(app: App, target: PilotTarget) {
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
   addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction })
-  // Exact browser origin. 13.6 derives it from the distribution, like the Cognito callback URLs.
-  const allowedOrigin = new CfnParameter(stack, 'AllowedOrigin', {
-    type: 'String', allowedPattern: ALLOWED_ORIGIN_PATTERN, description: 'Exact HTTPS origin of the web client',
-  })
-  addChatApi(stack, {
-    table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: allowedOrigin.valueAsString,
+  const { api } = addChatApi(stack, {
+    table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: webOrigin,
     httpCode: code('http'), httpRole: role('http'), httpFunctionName: NAMES.httpFunction,
     streamCode: code('stream'), streamRole: role('stream'), streamFunctionName: NAMES.streamFunction,
+  })
+  // The deployment's logical ID hashes the resolved API configuration: a new distribution logical ID changes it.
+  // The salt covers values that change without a template change (see README, API Gateway redeployments).
+  if (target.apiRedeploy !== undefined) api.latestDeployment!.addToLogicalId({ redeploy: target.apiRedeploy })
+  hosting = addWebHosting(stack, {
+    distDir: target.webDistDir, api, cognitoDomain: domain, clientId: client.userPoolClientId, publisherRole: role('publisher'),
   })
   if (target.synthetic) new CfnOutput(stack, 'SyntheticSynth', { value: 'true', description: 'Test synthesis: not deployable' })
   return stack

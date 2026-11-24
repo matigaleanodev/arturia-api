@@ -9,8 +9,12 @@ import { addIdentity } from './identity.js'
 
 test('signup_admin_only_totp', () => {
   const stack = new Stack(new App(), 'TestIdentity')
-  addIdentity(stack)
+  const { domain } = addIdentity(stack, { callbackUrl: 'https://web.example.test/', logoutUrl: 'https://web.example.test/' })
   const template = Template.fromStack(stack)
+  expect(stack.resolve(domain.baseUrl())).toEqual({ 'Fn::Join': ['', ['https://', { Ref: template.getResourceId('AWS::Cognito::UserPoolDomain') },
+    '.auth.', { Ref: 'AWS::Region' }, '.amazoncognito.com']] })
+  // Return URLs come from the composition (the distribution origin), never from stack parameters.
+  expect(Object.keys(template.toJSON().Parameters ?? {}).filter(name => name !== 'BootstrapVersion')).toEqual(['CognitoDomainPrefix'])
   template.hasResourceProperties('AWS::Cognito::UserPool', {
     UserPoolTier: 'LITE',
     AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
@@ -24,8 +28,8 @@ test('signup_admin_only_totp', () => {
     AllowedOAuthFlowsUserPoolClient: true,
     AllowedOAuthFlows: ['code'],
     AllowedOAuthScopes: ['openid', { 'Fn::Join': ['', [{ Ref: resourceServerId }, '/access']] }],
-    CallbackURLs: [{ Ref: 'LoginCallbackUrl' }],
-    LogoutURLs: [{ Ref: 'LogoutUrl' }],
+    CallbackURLs: ['https://web.example.test/'],
+    LogoutURLs: ['https://web.example.test/'],
     SupportedIdentityProviders: ['COGNITO'],
     EnableTokenRevocation: true,
     ExplicitAuthFlows: ['ALLOW_REFRESH_TOKEN_AUTH'],

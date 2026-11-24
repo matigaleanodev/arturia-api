@@ -25,6 +25,8 @@ export const STACKS = {
 } as const
 /** Placeholders resolved by the CDK synthesizer or by CloudFormation. */
 export const ARTIFACT_BUCKET = 'arturia-artifacts-${AWS::AccountId}-${AWS::Region}'
+/** Private bucket of the web client, readable only by CloudFront. Predictable so the foundation can scope its roles. */
+export const WEB_BUCKET = 'arturia-pilot-web-${AWS::AccountId}-${AWS::Region}'
 export const ARTIFACT_PREFIX = `${STACKS.pilot}/`
 /** Reserved, never valid for deployment: the test synthesis cannot target a real account. */
 export const SYNTHETIC_ACCOUNT = '000000000000'
@@ -39,10 +41,17 @@ export const NAMES = {
   turnQueue: `${P}turns.fifo`,
   turnDeadLetters: `${P}turns-dlq.fifo`,
   relayDeadLetters: `${P}relay-dlq`,
+  // Web hosting. The publisher is the custom resource Lambda that copies the web build and config.json to the bucket.
+  publisherFunction: `${P}publisher`,
+  publisherLayer: `${P}awscli`,
+  rewriteFunction: `${P}spa-rewrite`,
+  webCachePolicy: `${P}web`,
+  webHeaders: `${P}web`,
+  configHeaders: `${P}config`,
 } as const
 
 /** Roles created by the foundation. */
-export const ROLE_NAMES = ['stream', 'relay', 'worker', 'http', 'cloudformation'] as const
+export const ROLE_NAMES = ['stream', 'relay', 'worker', 'http', 'publisher', 'cloudformation'] as const
 export type RoleName = (typeof ROLE_NAMES)[number]
 export const BOUNDARY_NAME = `${P}boundary`
 
@@ -58,8 +67,10 @@ const trust = (Service: string) =>
 
 export const roleArn = (t: Target, name: RoleName) => `arn:${t.partition}:iam::${t.account}:role/${P}${name}`
 export const boundaryArn = (t: Target) => `arn:${t.partition}:iam::${t.account}:policy/${BOUNDARY_NAME}`
-export const bucketName = (t: Target) =>
-  ARTIFACT_BUCKET.replace('${AWS::AccountId}', t.account).replace('${AWS::Region}', t.region)
+const resolveBucket = (template: string, t: Target) =>
+  template.replace('${AWS::AccountId}', t.account).replace('${AWS::Region}', t.region)
+export const bucketName = (t: Target) => resolveBucket(ARTIFACT_BUCKET, t)
+export const webBucketName = (t: Target) => resolveBucket(WEB_BUCKET, t)
 
 function arns(t: Target) {
   const regional = (service: string, resource: string) => `arn:${t.partition}:${service}:${t.region}:${t.account}:${resource}`
@@ -74,6 +85,10 @@ function arns(t: Target) {
     restApis: `arn:${t.partition}:apigateway:${t.region}::/restapis`,
     bucket: `arn:${t.partition}:s3:::${bucketName(t)}`,
     artifacts: `arn:${t.partition}:s3:::${bucketName(t)}/${ARTIFACT_PREFIX}*`,
+    webBucket: `arn:${t.partition}:s3:::${webBucketName(t)}`,
+    layer: regional('lambda', `layer:${NAMES.publisherLayer}`),
+    // CloudFront is global: its ARNs carry the account but no region.
+    cloudfront: (resource: string) => `arn:${t.partition}:cloudfront::${t.account}:${resource}`,
     pilotStack: regional('cloudformation', `stack/${STACKS.pilot}/*`),
   }
 }
@@ -85,7 +100,8 @@ const passTo = (service: string): Condition => ({ StringEquals: { 'iam:PassedToS
 export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
   const a = arns(t)
   const queues = [NAMES.turnQueue, NAMES.turnDeadLetters, NAMES.relayDeadLetters].map(a.queue)
-  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction), a.fn(NAMES.httpFunction)]
+  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction), a.fn(NAMES.httpFunction),
+    a.fn(NAMES.publisherFunction)]
   const consumers = [a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
   const sendTo = (queue: string) =>
     allow(['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [a.queue(queue)])
@@ -117,6 +133,14 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
     http: [
       allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.httpFunction)]),
       allow([...HTTP_TABLE_ACTIONS], [a.table]),
+    ],
+    // BucketDeployment handler: reads the staged web sources and syncs them into the web bucket. Pruning a
+    // deployment's own scope needs DeleteObject; no bucket configuration, ACL or CloudFront invalidation.
+    publisher: [
+      allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.publisherFunction)]),
+      allow(['s3:GetObject'], [a.artifacts]),
+      allow(['s3:ListBucket'], [a.webBucket]),
+      allow(['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:AbortMultipartUpload'], [`${a.webBucket}/*`]),
     ],
     cloudformation: [
       allow(['s3:GetObject'], [a.artifacts]),
@@ -159,8 +183,42 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       allow(['lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping'],
         [a.eventSourceMappings], { StringEquals: { 'lambda:FunctionArn': consumers } }),
       allow(['lambda:GetEventSourceMapping'], [a.eventSourceMappings]),
-      allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay'), roleArn(t, 'worker'), roleArn(t, 'http')],
-        passTo('lambda.amazonaws.com')),
+      // The publisher is a custom resource: CloudFormation invokes it and creates its AWS CLI layer.
+      allow(['lambda:InvokeFunction'], [a.fn(NAMES.publisherFunction)]),
+      allow(['lambda:PublishLayerVersion'], [a.layer]),
+      allow(['lambda:GetLayerVersion', 'lambda:DeleteLayerVersion'], [`${a.layer}:*`]),
+      allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay'), roleArn(t, 'worker'), roleArn(t, 'http'),
+        roleArn(t, 'publisher')], passTo('lambda.amazonaws.com')),
+      // Web bucket configuration only: objects are written by the publisher, never by CloudFormation.
+      allow([
+        's3:CreateBucket', 's3:DeleteBucket', 's3:ListBucket', 's3:GetBucketLocation',
+        's3:PutBucketPublicAccessBlock', 's3:GetBucketPublicAccessBlock', 's3:PutEncryptionConfiguration',
+        's3:GetEncryptionConfiguration', 's3:PutBucketOwnershipControls', 's3:GetBucketOwnershipControls',
+        's3:PutBucketTagging', 's3:GetBucketTagging', 's3:PutBucketPolicy', 's3:GetBucketPolicy', 's3:DeleteBucketPolicy',
+      ], [a.webBucket]),
+      // Distribution, OAC, cache and header policy IDs are assigned by CloudFront, so only the type can be scoped.
+      allow([
+        'cloudfront:CreateDistribution', 'cloudfront:CreateDistributionWithTags', 'cloudfront:GetDistribution',
+        'cloudfront:GetDistributionConfig', 'cloudfront:UpdateDistribution', 'cloudfront:DeleteDistribution',
+        'cloudfront:TagResource', 'cloudfront:UntagResource', 'cloudfront:ListTagsForResource',
+      ], [a.cloudfront('distribution/*')]),
+      allow([
+        'cloudfront:CreateFunction', 'cloudfront:DescribeFunction', 'cloudfront:GetFunction', 'cloudfront:UpdateFunction',
+        'cloudfront:PublishFunction', 'cloudfront:DeleteFunction',
+      ], [a.cloudfront(`function/${NAMES.rewriteFunction}`)]),
+      allow([
+        'cloudfront:CreateOriginAccessControl', 'cloudfront:GetOriginAccessControl', 'cloudfront:GetOriginAccessControlConfig',
+        'cloudfront:UpdateOriginAccessControl', 'cloudfront:DeleteOriginAccessControl',
+      ], [a.cloudfront('origin-access-control/*')]),
+      allow([
+        'cloudfront:CreateCachePolicy', 'cloudfront:GetCachePolicy', 'cloudfront:GetCachePolicyConfig',
+        'cloudfront:UpdateCachePolicy', 'cloudfront:DeleteCachePolicy',
+      ], [a.cloudfront('cache-policy/*')]),
+      allow([
+        'cloudfront:CreateResponseHeadersPolicy', 'cloudfront:GetResponseHeadersPolicy',
+        'cloudfront:GetResponseHeadersPolicyConfig', 'cloudfront:UpdateResponseHeadersPolicy',
+        'cloudfront:DeleteResponseHeadersPolicy',
+      ], [a.cloudfront('response-headers-policy/*')]),
     ],
   }
 }
@@ -180,11 +238,15 @@ export function boundaryPolicy(t: Target) {
     allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [regional('logs', `log-group:/aws/lambda/${named}`)]),
     allow(['dynamodb:*'], [regional('dynamodb', `table/${named}`)]),
     allow(['sqs:*'], [regional('sqs', named)]),
-    allow(['lambda:*'], [regional('lambda', `function:${named}`), regional('lambda', 'event-source-mapping:*')]),
+    allow(['lambda:*'], [regional('lambda', `function:${named}`), regional('lambda', 'event-source-mapping:*'),
+      regional('lambda', `layer:${named}`), regional('lambda', `layer:${named}:*`)]),
     allow(['cognito-idp:*'], [regional('cognito-idp', 'userpool/*')]),
     allow(['apigateway:GET', 'apigateway:POST', 'apigateway:PUT', 'apigateway:PATCH', 'apigateway:DELETE'],
       [`arn:${t.partition}:apigateway:${t.region}::/restapis`, `arn:${t.partition}:apigateway:${t.region}::/restapis/*`]),
     allow(['s3:GetObject'], [`arn:${t.partition}:s3:::${bucketName(t)}/${ARTIFACT_PREFIX}*`]),
+    allow(['s3:*'], [`arn:${t.partition}:s3:::${webBucketName(t)}`, `arn:${t.partition}:s3:::${webBucketName(t)}/*`]),
+    allow(['cloudfront:*'], ['distribution/*', `function/${named}`, 'origin-access-control/*', 'cache-policy/*',
+      'response-headers-policy/*'].map(resource => `arn:${t.partition}:cloudfront::${t.account}:${resource}`)),
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
       'lambda:CreateEventSourceMapping'], ['*'], sameRegion(t)),
     allow(['iam:PassRole'], [`arn:${t.partition}:iam::${t.account}:role/${named}`]),

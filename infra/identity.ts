@@ -7,7 +7,13 @@ import {
 } from 'aws-cdk-lib/aws-cognito'
 import { ARTURIA_ACCESS_SCOPE } from '../src/identity/actor.ts'
 
-export function addIdentity(stack: Stack) {
+export interface IdentityProps {
+  /** Exact return URLs of the browser client; the pilot derives both from the web distribution. */
+  readonly callbackUrl: string
+  readonly logoutUrl: string
+}
+
+export function addIdentity(stack: Stack, props: IdentityProps) {
   const [serverId, scopeName] = ARTURIA_ACCESS_SCOPE.split('/')
   const domainPrefix = new CfnParameter(stack, 'CognitoDomainPrefix', {
     type: 'String',
@@ -15,12 +21,6 @@ export function addIdentity(stack: Stack) {
     minLength: 1,
     maxLength: 63,
   })
-  const httpsUrl = {
-    type: 'String',
-    allowedPattern: 'https://[^/?#\\s]+(?:/[^#\\s]*)?',
-  }
-  const callbackUrl = new CfnParameter(stack, 'LoginCallbackUrl', httpsUrl)
-  const logoutUrl = new CfnParameter(stack, 'LogoutUrl', httpsUrl)
 
   const userPool = new UserPool(stack, 'UserPool', {
     featurePlan: FeaturePlan.LITE,
@@ -46,13 +46,13 @@ export function addIdentity(stack: Stack) {
     oAuth: {
       flows: { authorizationCodeGrant: true },
       scopes: [OAuthScope.OPENID, OAuthScope.resourceServer(resourceServer, accessScope)],
-      callbackUrls: [callbackUrl.valueAsString],
-      logoutUrls: [logoutUrl.valueAsString],
+      callbackUrls: [props.callbackUrl],
+      logoutUrls: [props.logoutUrl],
     },
   })
 
   new CfnOutput(stack, 'UserPoolId', { value: userPool.userPoolId })
   new CfnOutput(stack, 'BrowserClientId', { value: client.userPoolClientId })
   new CfnOutput(stack, 'HostedLoginUrl', { value: domain.baseUrl() })
-  return { userPool, client }
+  return { userPool, client, domain }
 }
