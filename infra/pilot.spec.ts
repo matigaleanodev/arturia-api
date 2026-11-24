@@ -53,12 +53,13 @@ test('pilot_synth_with_code_assets_succeeds', () => {
 }, 20_000)
 
 test('assets_target_foundation_bucket_and_prefix', () => {
-  const { artifact } = synthPilot()
+  const { artifact, template } = synthPilot()
   const manifest = JSON.parse(readFileSync(join(artifact.assembly.directory, `${artifact.id}.assets.json`), 'utf8'))
   expect(Object.keys(manifest.dockerImages ?? {})).toEqual([])
   const files = Object.values(manifest.files) as { source: { path: string; packaging?: string }; destinations: Record<string, { bucketName: string; objectKey: string; assumeRoleArn?: string }> }[]
   const zipped = files.filter(file => file.source.packaging === 'zip')
-  expect(zipped).toHaveLength(Object.keys(BUNDLES).length)
+  // One code asset per composed function; bundles not yet composed (13.3/13.4) add no assets.
+  expect(zipped).toHaveLength(Object.keys(template.findResources('AWS::Lambda::Function')).length)
   for (const file of files) {
     for (const destination of Object.values(file.destinations)) {
       expect(destination.bucketName).toBe(`arturia-artifacts-${SYNTHETIC_ACCOUNT}-us-east-1`)

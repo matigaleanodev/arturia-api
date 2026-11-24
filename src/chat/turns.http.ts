@@ -23,7 +23,9 @@ function nonempty(value: unknown): string {
   if (typeof value !== 'string' || !value.length) invalid()
   return value
 }
-export async function chatHttp(chat: Chat, request: Request): Promise<{ status: number; body: Record<string, unknown> }> {
+// `report` receives unexpected failures for operational logging; the response stays generic.
+export async function chatHttp(chat: Chat, request: Request,
+  report?: (error: unknown) => void): Promise<{ status: number; body: Record<string, unknown> }> {
   const { actor, scopeId } = request
   try {
     if (!actor) throw new ChatError(401, 'UNAUTHENTICATED', 'Se requiere una sesión válida.')
@@ -48,6 +50,7 @@ export async function chatHttp(chat: Chat, request: Request): Promise<{ status: 
       }
     }
   } catch (error) {
+    if (!(error instanceof ChatError)) report?.(error)
     const fault = error instanceof ChatError ? error : new ChatError(500, 'INTERNAL_ERROR', 'No se pudo completar la solicitud.')
     return { status: fault.status, body: { code: fault.code, message: fault.message, requestId: request.requestId ?? randomUUID() } }
   }

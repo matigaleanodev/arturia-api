@@ -66,23 +66,35 @@ export function createCognitoActorResolver(
   return {
     async resolveActor(token) {
       const claims = await verifier.verify(token).catch(() => undefined)
-      if (!claims) return
-      const { sub, origin_jti: sessionId, auth_time: authTime, exp } = claims
-      if (typeof exp !== 'number' || !Number.isSafeInteger(exp) || exp <= Date.now() / 1_000) return
-      if (typeof sub !== 'string' || !sub.trim() ||
-          typeof sessionId !== 'string' || !sessionId.trim() ||
-          typeof authTime !== 'number') return
-
-      const userId = await store.findUserIdBySubject(sub)
-      if (!userId) return
-      const account = await store.getAccount(userId)
-      // A token issued during setup stays ineligible after admin activation.
-      if (!permitsAuthentication(account, authTime)) return
-
-      const session = await store.getSession(userId, sessionId) ??
-        await store.registerSession(userId, sessionId, authTime)
-      if (session.status !== 'active' || !permitsAuthentication(account, session.authTime)) return
-      return { userId, sessionId }
+      return claims ? resolveVerifiedActor(store, claims) : undefined
     },
   }
+}
+
+/** Claims of an access token whose signature, issuer, client and scope were already verified. */
+export interface VerifiedClaims {
+  readonly sub?: unknown
+  readonly origin_jti?: unknown
+  readonly auth_time?: unknown
+  readonly exp?: unknown
+}
+
+// Maps verified claims to the current Arturia actor, registering the token family on first use.
+export async function resolveVerifiedActor(store: IdentityStore, claims: VerifiedClaims): Promise<Actor | undefined> {
+  const { sub, origin_jti: sessionId, auth_time: authTime, exp } = claims
+  if (typeof exp !== 'number' || !Number.isSafeInteger(exp) || exp <= Date.now() / 1_000) return
+  if (typeof sub !== 'string' || !sub.trim() ||
+      typeof sessionId !== 'string' || !sessionId.trim() ||
+      typeof authTime !== 'number') return
+
+  const userId = await store.findUserIdBySubject(sub)
+  if (!userId) return
+  const account = await store.getAccount(userId)
+  // A token issued during setup stays ineligible after admin activation.
+  if (!permitsAuthentication(account, authTime)) return
+
+  const session = await store.getSession(userId, sessionId) ??
+    await store.registerSession(userId, sessionId, authTime)
+  if (session.status !== 'active' || !permitsAuthentication(account, session.authTime)) return
+  return { userId, sessionId }
 }

@@ -10,6 +10,8 @@
 export const BUNDLES = {
   stream: 'src/chat/stream.lambda.ts',
   relay: 'src/jobs/outbox.worker.ts',
+  http: 'src/http/turns.lambda.ts',
+  worker: 'src/chat/generate.lambda.ts',
 } as const
 export type BundleName = keyof typeof BUNDLES
 

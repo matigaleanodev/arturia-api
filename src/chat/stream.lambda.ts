@@ -6,7 +6,7 @@ import { type Writable } from 'node:stream'
 import { finished } from 'node:stream/promises'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { GetCommand } from '@aws-sdk/lib-dynamodb'
-import { ARTURIA_ACCESS_SCOPE } from '../identity/actor.js'
+import { gatewayClaims } from '../http/auth.js'
 import { createStreamReader, dynamoStreamSource } from './stream.reader.js'
 import { createStreamHttp, streamError, type StreamRequest, type StreamResponse } from './stream.http.js'
 import { ChatStore } from './turns.store.js'
@@ -26,16 +26,13 @@ const clientId = process.env.ARTURIA_CLIENT_ID!
 const store = new ChatStore(new DynamoDBClient({}), tableName)
 const streamHttp = createStreamHttp(createStreamReader(dynamoStreamSource(store)))
 
-// REST's scoped Cognito authorizer verifies the access token signature and issuer.
 // Only trusted requestContext claims may select the existing Arturia session.
-async function identity(claims: Record<string, string | number> | undefined, signal: AbortSignal) {
-  if (!claims || !clientId || claims.client_id !== clientId || claims.token_use !== 'access' ||
-      typeof claims.scope !== 'string' || !claims.scope.split(' ').includes(ARTURIA_ACCESS_SCOPE) ||
-      typeof claims.sub !== 'string' || !claims.sub.trim() ||
-      typeof claims.origin_jti !== 'string' || !claims.origin_jti.trim()) return
-  const expiresAt = Number(claims.exp) * 1_000
-  const authTime = Number(claims.auth_time)
-  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || !Number.isSafeInteger(authTime) || authTime < 1) return
+async function identity(raw: Record<string, string | number> | undefined, signal: AbortSignal) {
+  const claims = gatewayClaims(raw, clientId)
+  if (!claims) return
+  const expiresAt = claims.exp * 1_000
+  const authTime = claims.auth_time
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return
 
   const read = async (pk: string, sk: string) => (await store.db.send(new GetCommand({
     TableName: tableName, Key: { pk, sk }, ConsistentRead: true,

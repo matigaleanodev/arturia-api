@@ -19,6 +19,15 @@ El endpoint de eventos del turno admite el cursor opcional `after`, un entero ma
 
 `npm run bundle` genera un bundle autocontenido para Node.js 24 por cada handler Lambda en `dist/bundles/<nombre>/index.cjs`. `BUNDLES` en `infra/delivery.ts` enumera los puntos de entrada, que deben estar en `src/`.
 
+| Bundle | Handler | Configuración |
+|---|---|---|
+| `http` | Proxy REST de conversaciones y turnos (`src/http/turns.lambda.ts`). El actor sale solo de los claims del authorizer de Cognito para este cliente de la app con el scope `arturia/access`, y la sesión se revalida en DynamoDB. | `ARTURIA_TABLE_NAME`, `ARTURIA_CLIENT_ID` |
+| `worker` | Consumidor SQS de turnos (`src/chat/generate.lambda.ts`). `retry`, los mensajes inválidos y los fallos se devuelven como `batchItemFailures`; en un lote FIFO, los mensajes restantes se devuelven sin procesar. | `ARTURIA_TABLE_NAME`, `ARTURIA_ENVIRONMENT`, `ARTURIA_PROVIDER_MODE` |
+| `stream` | Eventos SSE del turno en modo streaming. | `ARTURIA_TABLE_NAME`, `ARTURIA_CLIENT_ID` |
+| `relay` | Relay del outbox desde el stream de DynamoDB hacia SQS. | `ARTURIA_TABLE_NAME`, `ARTURIA_TURN_QUEUE_URL` |
+
+Los handlers `http` y `worker` leen y validan su configuración una vez por entorno de ejecución. Una configuración inválida falla cerrada: HTTP responde `500 INTERNAL_ERROR` con la forma pública de error y el worker hace fallar la invocación para que todos los mensajes vuelvan a la cola. Por ahora, `ARTURIA_PROVIDER_MODE` acepta solo los fixtures no facturables del piloto, y únicamente con `ARTURIA_ENVIRONMENT=pilot`: `fixture` emite tres bloques sintéticos separados por un segundo y `fail` nunca ejecuta el turno, de modo que el mensaje llega a la cola de mensajes fallidos. Los logs son JSON estructurado con código, identificadores UUID, estado HTTP y clase de error, nunca texto de mensajes, prompts, claims ni secretos.
+
 El despliegue se divide en dos stacks y no requiere bootstrap de CDK:
 
 - **Fundación** (`infra/foundation-app.ts`, `arturia-foundation`): bucket de artefactos privado, versionado, cifrado, con TLS obligatorio y política `Retain`, más los roles predefinidos del piloto. No tiene assets y su plantilla no depende de la cuenta. Requiere un administrador y la boundary externa `arturia-pilot-boundary`, cuyo documento es `boundaryPolicy()`. Los roles no pueden excederla.

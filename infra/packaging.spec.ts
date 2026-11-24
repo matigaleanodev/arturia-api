@@ -23,7 +23,7 @@ afterAll(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: t
 const bundleFile = (outdir: string, name: string) => join(outdir, name, 'index.cjs')
 
 test('bundle_entries_are_runtime_sources_only', () => {
-  expect(Object.keys(BUNDLES).sort()).toEqual(['relay', 'stream'])
+  expect(Object.keys(BUNDLES).sort()).toEqual(['http', 'relay', 'stream', 'worker'])
   for (const entry of Object.values(BUNDLES)) {
     expect(normalize(entry).startsWith('src/')).toBe(true)
     expect(entry).not.toMatch(/\.spec\.ts$/)

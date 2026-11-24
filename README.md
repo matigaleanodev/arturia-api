@@ -19,6 +19,15 @@ The turn events endpoint accepts an optional nonnegative integer `after` cursor.
 
 `npm run bundle` builds one self-contained Node.js 24 bundle per Lambda handler in `dist/bundles/<name>/index.cjs`. `BUNDLES` in `infra/delivery.ts` lists the entry points, which must live in `src/`.
 
+| Bundle | Handler | Configuration |
+|---|---|---|
+| `http` | REST proxy for conversations and turns (`src/http/turns.lambda.ts`). The actor comes only from the Cognito authorizer claims for this app client with the `arturia/access` scope, and the session is revalidated in DynamoDB. | `ARTURIA_TABLE_NAME`, `ARTURIA_CLIENT_ID` |
+| `worker` | SQS consumer of turns (`src/chat/generate.lambda.ts`). `retry`, invalid messages and failures become `batchItemFailures`; in a FIFO batch the remaining messages are returned unprocessed. | `ARTURIA_TABLE_NAME`, `ARTURIA_ENVIRONMENT`, `ARTURIA_PROVIDER_MODE` |
+| `stream` | SSE turn events in streaming mode. | `ARTURIA_TABLE_NAME`, `ARTURIA_CLIENT_ID` |
+| `relay` | DynamoDB stream outbox relay to SQS. | `ARTURIA_TABLE_NAME`, `ARTURIA_TURN_QUEUE_URL` |
+
+The `http` and `worker` handlers read and validate their configuration once per execution environment. An invalid configuration fails closed: HTTP answers `500 INTERNAL_ERROR` with the public error shape, and the worker fails the invocation so every message returns to the queue. `ARTURIA_PROVIDER_MODE` currently accepts only the non-billable pilot fixtures, and only with `ARTURIA_ENVIRONMENT=pilot`: `fixture` emits three synthetic blocks one second apart, and `fail` never runs the turn so the message reaches the dead-letter queue. Logs are structured JSON with a code, UUID identifiers, HTTP status and error class only, never message text, prompts, claims or secrets.
+
 Deployment is split into two stacks and needs no CDK bootstrap:
 
 - **Foundation** (`infra/foundation-app.ts`, `arturia-foundation`): a private, versioned, encrypted artifact bucket with TLS enforced and a `Retain` policy, plus the pilot's predefined roles. It has no assets and its template is account-agnostic. It requires an administrator and the external permissions boundary `arturia-pilot-boundary`, whose document is `boundaryPolicy()`. The roles cannot exceed it.
