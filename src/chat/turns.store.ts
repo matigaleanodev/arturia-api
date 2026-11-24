@@ -12,7 +12,7 @@ import { ChatError, forbidden, notFound, type TurnInput, type ConversationInput,
 
 type Writes = NonNullable<TransactWriteCommandInput['TransactItems']>
 export const scopePartition = (userId: string, scopeId: string) => JSON.stringify([userId, scopeId])
-const outboxPartition = (userId: string, scopeId: string) => 'OUTBOX#' + scopePartition(userId, scopeId)
+export const outboxPartition = (userId: string, scopeId: string) => 'OUTBOX#' + scopePartition(userId, scopeId)
 export const turnKey = (ref: TurnReference) => ({ pk: scopePartition(ref.userId, ref.scopeId), sk: 'TURN#' + ref.turnId })
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const grantKey = (actor: Actor, scopeId: string) => ({ pk: scopePartition(actor.userId, scopeId), sk: 'SCOPE' })
@@ -185,7 +185,8 @@ export class ChatStore implements IdentityStore, PolicyStore {
             ConditionExpression: 'turnCount = :previous',
             ExpressionAttributeValues: { ':next': ordinal, ':previous': conversation.turnCount } } },
           insert(messageSk, { text: input.text, turnId }),
-          insert('TURN#' + turnId, { ...snapshot, sessionId: actor.sessionId, messageSk }),
+          // acceptedAt is operational metadata for pilot-inspect; the public snapshot never carries it.
+          insert('TURN#' + turnId, { ...snapshot, sessionId: actor.sessionId, messageSk, acceptedAt: this.now().getTime() }),
           insert('OUTBOX#' + turnId, { dispatchState: 'pending' }, outboxPartition(actor.userId, scopeId)),
           insert(receiptSk, { fingerprint, turnId }),
         ])

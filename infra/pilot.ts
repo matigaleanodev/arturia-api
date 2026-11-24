@@ -89,6 +89,10 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
       throw new Error(`Missing Lambda bundle "${name}" in ${bundleDir}: run npm run bundle first`)
     }
   }
+  // A deployment without the switch would re-enable a paused worker (runbook section 9): state it every time.
+  if (workerPaused === undefined) {
+    throw new Error('Real pilot synthesis requires -c arturia:workerPaused=true|false (false resumes the worker)')
+  }
   return { synthetic: false, account, region, bundleDir, webDir, webDistDir, ...redeploy }
 }
 

@@ -439,7 +439,7 @@ describe('web_dist_is_checked_before_synthesis', () => {
   })
 
   test('the real synthesis reads the production build of the web checkout', () => {
-    const located = { 'arturia:target': 'pilot', 'arturia:account': '111111111111', 'arturia:region': 'us-east-1' }
+    const located = { 'arturia:target': 'pilot', 'arturia:account': '111111111111', 'arturia:region': 'us-east-1', 'arturia:workerPaused': 'false' }
     const read = (key: string) => located[key as keyof typeof located]
     const bundles = tempDir()
     for (const name of ['stream', 'relay', 'http', 'worker']) {

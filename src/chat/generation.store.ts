@@ -98,9 +98,10 @@ export class GenerationAttempt {
   claim(leaseMs: number) {
     return changeTurn(this.store, this.ref, now => ({
       ConditionExpression: '(#status = :queued OR (#status = :running AND leaseUntil <= :now)) AND attribute_not_exists(sendState)',
-      UpdateExpression: 'SET #status = :running, attemptId = :attempt, leaseId = :lease, leaseUntil = :until',
+      // claims counts started attempts (each may reach the provider); read only by pilot-inspect.
+      UpdateExpression: 'SET #status = :running, attemptId = :attempt, leaseId = :lease, leaseUntil = :until ADD claims :one',
       ExpressionAttributeValues: { ':queued': 'queued', ':running': 'running', ':now': now, ':until': now + leaseMs,
-        ':attempt': this.attemptId, ':lease': this.leaseId },
+        ':attempt': this.attemptId, ':lease': this.leaseId, ':one': 1 },
     }), this.guard)
   }
 

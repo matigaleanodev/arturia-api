@@ -115,6 +115,9 @@ test('pilot_real_synth_requires_account_region_and_web_dir', () => {
   expect(runApp({ ...pilot, 'arturia:account': '12345' }).stderr).toContain('arturia:account')
   expect(runApp({ ...pilot, 'arturia:account': target.account }).stderr).toContain('arturia:region')
   const located = { ...pilot, 'arturia:account': target.account, 'arturia:region': 'us-east-1' }
+  // Every real synthesis states the worker switch: a hotfix without it cannot silently resume a paused worker.
+  expect(runApp(located, { ARTURIA_WEB_DIR: web }).stderr).toContain('arturia:workerPaused')
+  const stated = { ...located, 'arturia:workerPaused': 'false' }
   expect(runApp(located).stderr).toContain('ARTURIA_WEB_DIR')
   expect(runApp(located, { ARTURIA_WEB_DIR: join(web, 'missing') }).stderr).toContain('ARTURIA_WEB_DIR')
   expect(runApp({ ...pilot, 'arturia:target': 'prod' }).stderr).toContain('arturia:target')
@@ -122,14 +125,15 @@ test('pilot_real_synth_requires_account_region_and_web_dir', () => {
 
   const bundles = tempDir()
   const read = (context: Record<string, unknown>) => (key: string) => context[key]
-  expect(() => resolvePilotTarget(read(located), { ARTURIA_WEB_DIR: web }, bundles)).toThrow(/npm run bundle/)
+  expect(() => resolvePilotTarget(read(stated), { ARTURIA_WEB_DIR: web }, bundles)).toThrow(/npm run bundle/)
   for (const name of Object.keys(BUNDLES)) {
     mkdirSync(join(bundles, name))
     writeFileSync(join(bundles, name, 'index.cjs'), 'exports.handler=async()=>{}')
   }
-  expect(resolvePilotTarget(read(located), { ARTURIA_WEB_DIR: web }, bundles)).toEqual({
-    synthetic: false, account: target.account, region: 'us-east-1', bundleDir: bundles, webDir: web, webDistDir })
-  const { stack, template } = synthPilot(resolvePilotTarget(read(located), { ARTURIA_WEB_DIR: web }, bundles))
+  expect(() => resolvePilotTarget(read(located), { ARTURIA_WEB_DIR: web }, bundles)).toThrow(/arturia:workerPaused/)
+  expect(resolvePilotTarget(read(stated), { ARTURIA_WEB_DIR: web }, bundles)).toEqual({
+    synthetic: false, account: target.account, region: 'us-east-1', bundleDir: bundles, webDir: web, webDistDir, workerPaused: false })
+  const { stack, template } = synthPilot(resolvePilotTarget(read(stated), { ARTURIA_WEB_DIR: web }, bundles))
   expect(stack.stackName).toBe(STACKS.pilot)
   expect(template.toJSON().Outputs?.SyntheticSynth).toBeUndefined()
 }, 60_000)

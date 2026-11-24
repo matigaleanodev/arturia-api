@@ -11,6 +11,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 import { SQSClient } from '@aws-sdk/client-sqs'
 import { ChatStore } from '../chat/turns.store.js'
 import { sqsTurnQueue, type TurnQueue } from '../jobs/outbox.js'
+import { inspectTurn, staleTurns } from './inspect.js'
 import { pendingOutboxFor, republishOutbox } from './outbox-recovery.js'
 import { AdminError, PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyProvision, assertSubject, confirmTable, readProvision,
   type AwsTarget } from './provision.js'
@@ -22,6 +23,7 @@ interface BaseDeps {
   out(line: string): void
 }
 export interface ProvisionDeps extends BaseDeps { now(): number }
+export interface InspectDeps extends BaseDeps { now(): number }
 export interface RepublishDeps extends BaseDeps {
   createQueue(target: OperatorTarget, queueUrl: string): TurnQueue & { close?(): void }
 }
@@ -173,6 +175,62 @@ export function runRepublish(argv: readonly string[], env: Env, deps: RepublishD
   })
 }
 
+/** Minimum and maximum `--older-than-minutes`: below the worker's retry window every live turn would look stale. */
+export const STALE_MINUTES = { default: 60, min: 15, max: 14 * 24 * 60 } as const
+
+/**
+ * `pilot-inspect`: read-only. `--turn <id> --scope <id>` reports the claims of one turn; `--stale` lists the
+ * user's non-terminal turns older than the threshold. Exit 2 when stale turns exist. There is no writing mode.
+ */
+export function runInspect(argv: readonly string[], env: Env, deps: InspectDeps): Promise<number> {
+  return run(deps.out, async () => {
+    refuseEnvironment(env)
+    let parsed
+    try {
+      parsed = parseArgs({ args: [...argv], strict: true, allowPositionals: false, options: {
+        sub: { type: 'string' }, scope: { type: 'string', multiple: true }, turn: { type: 'string' },
+        stale: { type: 'boolean' }, 'older-than-minutes': { type: 'string' }, ...targetOptions,
+      } })
+    } catch { throw new AdminError('Argumentos inválidos') }
+    const { values } = parsed
+    if (!values.sub) throw new AdminError('Falta --sub')
+    assertSubject(values.sub)
+    if (Boolean(values.stale) === Boolean(values.turn)) throw new AdminError('Usá --stale o --turn <id>, uno de los dos')
+    const scopeIds = [...new Set(values.scope ?? PILOT_SCOPE_IDS)]
+    if (!scopeIds.every(id => (PILOT_SCOPE_IDS as readonly string[]).includes(id))) {
+      throw new AdminError('--scope debe ser ' + PILOT_SCOPE_IDS.join(' o '))
+    }
+    if (values.turn !== undefined && (scopeIds.length !== 1 || !/^[0-9a-f-]{36}$/.test(values.turn))) {
+      throw new AdminError('--turn requiere un ID de turno válido y un único --scope')
+    }
+    const minutes = values['older-than-minutes'] === undefined ? STALE_MINUTES.default : Number(values['older-than-minutes'])
+    if (!Number.isSafeInteger(minutes) || minutes < STALE_MINUTES.min || minutes > STALE_MINUTES.max) {
+      throw new AdminError(`--older-than-minutes debe estar entre ${STALE_MINUTES.min} y ${STALE_MINUTES.max}`)
+    }
+    const target = readTarget(values)
+    const client = deps.createClient(target)
+    try {
+      await confirmTable(client, target)
+      const store = new ChatStore(client, target.tableName)
+      const userId = await store.findUserIdBySubject(values.sub)
+      if (!userId) throw new AdminError('El sub no está aprovisionado')
+      const subject = mask(values.sub)
+      const now = deps.now()
+      if (values.turn) {
+        const turn = await inspectTurn(store, { userId, scopeId: scopeIds[0]!, turnId: values.turn }, now)
+        if (!turn) throw new AdminError('El turno no existe en ese ámbito')
+        deps.out(JSON.stringify({ mode: 'turn', subject, turn }))
+        return 0
+      }
+      const turns = await staleTurns(store, userId, scopeIds, { olderThanMs: minutes * 60_000, now })
+      deps.out(JSON.stringify({ mode: 'stale', subject, olderThanMinutes: minutes, count: turns.length, turns }))
+      return turns.length ? 2 : 0
+    } finally {
+      client.destroy()
+    }
+  })
+}
+
 /** Real AWS clients: explicit region and profile, no endpoint overrides (refused above). */
 export function awsProvisionDeps(): ProvisionDeps {
   return {
@@ -188,6 +246,13 @@ export function awsRepublishDeps(): RepublishDeps {
       const sqs = new SQSClient({ region, profile, maxAttempts: 3 })
       return { ...sqsTurnQueue(sqs, queueUrl), close: () => sqs.destroy() }
     },
+    out: line => process.stdout.write(line + '\n'),
+  }
+}
+export function awsInspectDeps(): InspectDeps {
+  return {
+    createClient: ({ region, profile }) => new DynamoDBClient({ region, profile, maxAttempts: 3 }),
+    now: () => Date.now(),
     out: line => process.stdout.write(line + '\n'),
   }
 }
