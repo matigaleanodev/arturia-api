@@ -7,15 +7,16 @@ import { CfnBucket, CfnBucketPolicy } from 'aws-cdk-lib/aws-s3'
 import type { Construct } from 'constructs'
 import { addBudget } from './cost-controls.ts'
 import {
-  ARTIFACT_BUCKET, BOUNDARY_NAME, OPERATOR_POLICY_NAME, ROLE_NAMES, STACKS, operatorManagedPolicy, policy, rolePolicies, roleTrust,
-  type Target,
+  ARTIFACT_BUCKET, BOUNDARY_NAME, HOSTING_POLICY_NAME, OPERATOR_POLICY_NAME, ROLE_NAMES, STACKS, cloudformationPolicies,
+  operatorManagedPolicy, policy, rolePolicies, roleTrust, type Target,
 } from './delivery.ts'
 
 /**
- * Privileged foundation: the artifact bucket, the pilot's predefined roles, the operator's managed
- * policy and the project's monthly budget. It has no assets and needs no CDK bootstrap. An administrator
- * deploys it after creating the external boundary, which this stack references but cannot edit. The
- * budget lives here so that destroying the pilot keeps cost monitoring. The template is account-agnostic.
+ * Privileged foundation: the artifact bucket, the pilot's predefined roles, the hosting managed policy
+ * of the CloudFormation role, the operator's managed policy and the project's monthly budget. It has no
+ * assets and needs no CDK bootstrap. An administrator deploys it after creating the external boundary,
+ * which this stack references but cannot edit. The budget lives here so that destroying the pilot keeps
+ * cost monitoring. The template is account-agnostic.
  */
 export class FoundationStack extends Stack {
   constructor(scope: Construct, id: string) {
@@ -54,12 +55,20 @@ export class FoundationStack extends Stack {
 
     const boundary = Fn.sub(`arn:\${AWS::Partition}:iam::\${AWS::AccountId}:policy/${BOUNDARY_NAME}`)
     const policies = rolePolicies(deployed)
+    const cfn = cloudformationPolicies(deployed)
+    // Attached from the CloudFormation role only: the policy itself names no principal.
+    const hosting = new CfnManagedPolicy(this, 'CloudFormationHostingPolicy', {
+      managedPolicyName: HOSTING_POLICY_NAME,
+      description: 'Arturia pilot: web hosting and observability permissions of the CloudFormation role',
+      policyDocument: policy(cfn.hosting),
+    })
     for (const name of ROLE_NAMES) {
       const role = new CfnRole(this, `${name}Role`, {
         roleName: `${STACKS.pilot}-${name}`,
         permissionsBoundary: boundary,
         assumeRolePolicyDocument: roleTrust(name),
-        policies: [{ policyName: 'pilot', policyDocument: policy(policies[name]) }],
+        policies: [{ policyName: 'pilot', policyDocument: policy(name === 'cloudformation' ? cfn.inline : policies[name]) }],
+        ...(name === 'cloudformation' ? { managedPolicyArns: [hosting.ref] } : {}),
       })
       new CfnOutput(this, `${name}RoleArn`, { value: role.attrArn })
     }

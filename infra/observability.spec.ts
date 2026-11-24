@@ -422,8 +422,10 @@ describe('foundation_permissions_cover_observability_within_arturia', () => {
       }
     }
     const { json } = synthFoundation()
-    const [[, managed]] = ofType(json, 'AWS::IAM::ManagedPolicy') as [[string, Resource]]
-    expect(managed.Properties).toMatchObject({ ManagedPolicyName: OPERATOR_POLICY_NAME })
+    const operators = (ofType(json, 'AWS::IAM::ManagedPolicy') as [string, Resource][])
+      .filter(([, policy]) => policy.Properties?.ManagedPolicyName === OPERATOR_POLICY_NAME)
+    expect(operators).toHaveLength(1)
+    const [[, managed]] = operators as [[string, Resource]]
     // The foundation defines the policy; attaching it to the Architect permission set is an A1 administrative step.
     for (const key of ['Roles', 'Users', 'Groups']) expect(managed.Properties![key]).toBeUndefined()
   })

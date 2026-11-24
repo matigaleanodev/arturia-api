@@ -58,6 +58,8 @@ export const NAMES = {
 export const BUDGET_NAME = 'arturia-aws-monthly'
 /** Customer managed policy for the Architect permission set; attaching it is an administrative step (A1). */
 export const OPERATOR_POLICY_NAME = `${P}operator`
+/** Customer managed policy of the foundation with the CloudFormation role's hosting and observability permissions. */
+export const HOSTING_POLICY_NAME = `${P}cloudformation-hosting`
 
 /** Roles created by the foundation. */
 export const ROLE_NAMES = ['stream', 'relay', 'worker', 'http', 'publisher', 'cloudformation'] as const
@@ -115,10 +117,7 @@ const passTo = (service: string): Condition => ({ StringEquals: { 'iam:PassedToS
 /** Minimal permissions of each predefined role. */
 export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
   const a = arns(t)
-  const queues = [NAMES.turnQueue, NAMES.turnDeadLetters, NAMES.relayDeadLetters].map(a.queue)
-  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction), a.fn(NAMES.httpFunction),
-    a.fn(NAMES.publisherFunction)]
-  const consumers = [a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
+  const cfn = cloudformationPolicies(t)
   const sendTo = (queue: string) =>
     allow(['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [a.queue(queue)])
   return {
@@ -158,10 +157,29 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       allow(['s3:ListBucket'], [a.webBucket]),
       allow(['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:AbortMultipartUpload'], [`${a.webBucket}/*`]),
     ],
-    cloudformation: [
+    cloudformation: [...cfn.inline, ...cfn.hosting],
+  }
+}
+
+/**
+ * Permissions of the CloudFormation role, checked against the registry handlers of every pilot resource type (A0).
+ * Web hosting and observability live in a customer managed policy of the foundation attached to the role
+ * ({@link HOSTING_POLICY_NAME}), because the inline policy alone exceeds 10,240 characters with the longest ARNs.
+ * The union is unchanged by the split: both documents only allow.
+ */
+export function cloudformationPolicies(t: Target): { inline: Statement[]; hosting: Statement[] } {
+  const a = arns(t)
+  const queues = [NAMES.turnQueue, NAMES.turnDeadLetters, NAMES.relayDeadLetters].map(a.queue)
+  const functions = [a.fn(NAMES.streamFunction), a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction), a.fn(NAMES.httpFunction),
+    a.fn(NAMES.publisherFunction)]
+  const consumers = [a.fn(NAMES.relayFunction), a.fn(NAMES.workerFunction)]
+  return {
+    inline: [
       allow(['s3:GetObject'], [a.artifacts]),
-      // Neither action supports resource-level permissions.
-      allow(['cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain'], ['*'], sameRegion(t)),
+      // No resource-level permissions. The function delete handler reads network interfaces so a delete or
+      // rollback does not end in DELETE_FAILED (A0, Goldfish).
+      allow(['cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain', 'ec2:DescribeNetworkInterfaces'], ['*'],
+        sameRegion(t)),
       allow([
         'cognito-idp:DescribeUserPool', 'cognito-idp:UpdateUserPool', 'cognito-idp:DeleteUserPool',
         'cognito-idp:GetUserPoolMfaConfig', 'cognito-idp:SetUserPoolMfaConfig',
@@ -171,6 +189,8 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         'cognito-idp:CreateResourceServer', 'cognito-idp:DescribeResourceServer',
         'cognito-idp:UpdateResourceServer', 'cognito-idp:DeleteResourceServer',
         'cognito-idp:TagResource', 'cognito-idp:UntagResource', 'cognito-idp:ListTagsForResource',
+        // Read handler of AWS::Cognito::UserPoolClient (A0); the clients have no secret.
+        'cognito-idp:ListUserPoolClientSecrets',
       ], [a.userPools]),
       allow(['apigateway:POST'], [a.restApis]),
       allow(['apigateway:GET', 'apigateway:POST', 'apigateway:PUT', 'apigateway:PATCH', 'apigateway:DELETE'],
@@ -179,6 +199,8 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         'dynamodb:CreateTable', 'dynamodb:DescribeTable', 'dynamodb:UpdateTable', 'dynamodb:DeleteTable',
         'dynamodb:DescribeContinuousBackups', 'dynamodb:UpdateContinuousBackups',
         'dynamodb:DescribeTimeToLive', 'dynamodb:TagResource', 'dynamodb:UntagResource', 'dynamodb:ListTagsOfResource',
+        // Read handler of AWS::DynamoDB::Table (A0).
+        'dynamodb:DescribeContributorInsights', 'dynamodb:DescribeKinesisStreamingDestination', 'dynamodb:GetResourcePolicy',
       ], [a.table]),
       allow([
         'sqs:CreateQueue', 'sqs:DeleteQueue', 'sqs:GetQueueAttributes', 'sqs:SetQueueAttributes',
@@ -190,6 +212,8 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         'lambda:GetFunctionCodeSigningConfig', 'lambda:GetRuntimeManagementConfig', 'lambda:GetFunctionRecursionConfig',
         'lambda:PutFunctionConcurrency', 'lambda:DeleteFunctionConcurrency', 'lambda:GetPolicy',
         'lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags',
+        // Read handler of AWS::Lambda::Function (A0).
+        'lambda:GetFunctionScalingConfig',
       ], functions),
       allow(['lambda:AddPermission', 'lambda:RemovePermission'], functions,
         { StringEquals: { 'lambda:Principal': 'apigateway.amazonaws.com' } }),
@@ -205,12 +229,24 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
       allow(['lambda:GetLayerVersion', 'lambda:DeleteLayerVersion'], [`${a.layer}:*`]),
       allow(['iam:PassRole'], [roleArn(t, 'stream'), roleArn(t, 'relay'), roleArn(t, 'worker'), roleArn(t, 'http'),
         roleArn(t, 'publisher')], passTo('lambda.amazonaws.com')),
+      // Tags of the App (Project, Environment) on event source mappings and on the API and its stage.
+      allow(['lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags'], [a.eventSourceMappings]),
+      allow(['apigateway:GET', 'apigateway:PUT', 'apigateway:DELETE'], [a.apiTags]),
+    ],
+    hosting: [
       // Web bucket configuration only: objects are written by the publisher, never by CloudFormation.
       allow([
         's3:CreateBucket', 's3:DeleteBucket', 's3:ListBucket', 's3:GetBucketLocation',
         's3:PutBucketPublicAccessBlock', 's3:GetBucketPublicAccessBlock', 's3:PutEncryptionConfiguration',
         's3:GetEncryptionConfiguration', 's3:PutBucketOwnershipControls', 's3:GetBucketOwnershipControls',
         's3:PutBucketTagging', 's3:GetBucketTagging', 's3:PutBucketPolicy', 's3:GetBucketPolicy', 's3:DeleteBucketPolicy',
+        // Read and create handlers of AWS::S3::Bucket (A0): configuration reads and the schema's tag actions.
+        's3:GetBucketAcl', 's3:GetBucketCORS', 's3:GetBucketVersioning', 's3:GetBucketWebsite', 's3:GetBucketLogging',
+        's3:GetBucketNotification', 's3:GetBucketObjectLockConfiguration', 's3:GetBucketAbac', 's3:GetBucketDefaultStorageClass',
+        's3:GetBucketMetadataTableConfiguration', 's3:GetAccelerateConfiguration', 's3:GetAnalyticsConfiguration',
+        's3:GetIntelligentTieringConfiguration', 's3:GetInventoryConfiguration', 's3:GetLifecycleConfiguration',
+        's3:GetMetricsConfiguration', 's3:GetReplicationConfiguration', 's3:TagResource', 's3:UntagResource',
+        's3:ListTagsForResource',
       ], [a.webBucket]),
       // Distribution, OAC, cache and header policy IDs are assigned by CloudFront, so only the type can be scoped.
       allow([
@@ -243,8 +279,9 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         // Legacy tag actions and the data protection cleanup listed by the AWS::Logs::LogGroup handlers.
         'logs:TagLogGroup', 'logs:UntagLogGroup', 'logs:ListTagsLogGroup', 'logs:DeleteDataProtectionPolicy',
       ], a.logGroups),
-      // Listing has no resource type: read-only metadata, region bound.
-      allow(['logs:DescribeLogGroups'], ['*'], sameRegion(t)),
+      // No resource type: read-only metadata, region bound. The index and resource policy reads come from the
+      // AWS::Logs::LogGroup read handler (A0).
+      allow(['logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies'], ['*'], sameRegion(t)),
       allow([
         'cloudwatch:PutMetricAlarm', 'cloudwatch:DeleteAlarms', 'cloudwatch:DescribeAlarms',
         'cloudwatch:TagResource', 'cloudwatch:UntagResource', 'cloudwatch:ListTagsForResource',
@@ -256,9 +293,6 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
         'sns:GetDataProtectionPolicy',
       ], [a.topic]),
       allow(['sns:Unsubscribe', 'sns:GetSubscriptionAttributes', 'sns:SetSubscriptionAttributes'], [a.subscriptions]),
-      // Tags of the App (Project, Environment) on event source mappings and on the API and its stage.
-      allow(['lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags'], [a.eventSourceMappings]),
-      allow(['apigateway:GET', 'apigateway:PUT', 'apigateway:DELETE'], [a.apiTags]),
     ],
   }
 }
@@ -291,7 +325,8 @@ export function boundaryPolicy(t: Target) {
     allow(['cloudfront:*'], ['distribution/*', `function/${named}`, 'origin-access-control/*', 'cache-policy/*',
       'response-headers-policy/*'].map(resource => `arn:${t.partition}:cloudfront::${t.account}:${resource}`)),
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
-      'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups'], ['*'], sameRegion(t)),
+      'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
+      'ec2:DescribeNetworkInterfaces'], ['*'], sameRegion(t)),
     allow(['iam:PassRole'], [`arn:${t.partition}:iam::${t.account}:role/${named}`]),
   ])
 }

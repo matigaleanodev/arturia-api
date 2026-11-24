@@ -118,7 +118,7 @@ test('pilot_resources_match_the_inventory', () => {
   expect(inventory(synthPilot({ ...synthetic, apiAccessLogs: true }).Resources))
     .toEqual({ ...PILOT_INVENTORY, 'AWS::Logs::LogGroup': PILOT_INVENTORY['AWS::Logs::LogGroup']! + 1 })
   expect(inventory(synthFoundation().Resources)).toEqual({ 'AWS::S3::Bucket': 1, 'AWS::S3::BucketPolicy': 1, 'AWS::IAM::Role': 6,
-    'AWS::IAM::ManagedPolicy': 1, 'AWS::Budgets::Budget': 1 })
+    'AWS::IAM::ManagedPolicy': 2, 'AWS::Budgets::Budget': 1 })
 }, 30_000)
 
 describe('iam_minimum_per_function', () => {

@@ -6,6 +6,7 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
 import type { ProviderMode } from '../src/config/runtime.ts'
 import { TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
+import { mapEventSourcesByArn } from './event-source-arn.ts'
 
 /** Item actions of the generation worker, including those inside its transactions. It never queries. */
 export const WORKER_TABLE_ACTIONS = ['dynamodb:ConditionCheckItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem']
@@ -40,5 +41,6 @@ export function addWorker(scope: Construct, { table, queue, code, role, function
   worker.addEventSource(new SqsEventSource(queue, {
     batchSize: 1, reportBatchItemFailures: true, maxConcurrency: t.workerMaxConcurrency, enabled: !paused,
   }))
+  mapEventSourcesByArn(worker)
   return worker
 }

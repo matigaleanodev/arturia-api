@@ -6,6 +6,7 @@ import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
 import { TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
 import { TABLE_LIMITS } from './cost-controls.ts'
+import { mapEventSourcesByArn } from './event-source-arn.ts'
 
 export interface OutboxNames {
   readonly table: string
@@ -55,5 +56,6 @@ export function addOutbox(scope: Construct, relay: lambda.Function, names?: Outb
     retryAttempts: 5, maxRecordAge: Duration.hours(22), reportBatchItemFailures: true,
     onFailure: new SqsDlq(streamDlq),
   }))
+  mapEventSourcesByArn(relay)
   return { table, turnQueue, workerDlq, streamDlq }
 }

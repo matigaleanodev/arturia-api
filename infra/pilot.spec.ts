@@ -43,7 +43,8 @@ const glob = (pattern: string) =>
 const covers = (ceiling: Statement[], action: string, resource: string) => ceiling.some(statement =>
   statement.Action.some(pattern => glob(pattern).test(action)) && statement.Resource.some(pattern => glob(pattern).test(resource)))
 const WILDCARD_ACTIONS = new Set(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
-  'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups'])
+  'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
+  'ec2:DescribeNetworkInterfaces'])
 
 test('pilot_synth_with_code_assets_succeeds', () => {
   const { template, assembly } = synthPilot()
@@ -101,8 +102,8 @@ test('foundation_has_no_assets_and_retains_bucket', () => {
   for (const role of roles) {
     expect(role.Properties.PermissionsBoundary).toEqual({ 'Fn::Sub': 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/arturia-pilot-boundary' })
   }
-  // Bucket, bucket policy, operator managed policy and budget (13.8).
-  expect(Object.keys(template.toJSON().Resources).length).toBe(ROLE_NAMES.length + 4)
+  // Bucket, bucket policy, operator and cloudformation hosting managed policies, and budget (13.8, post-A0).
+  expect(Object.keys(template.toJSON().Resources).length).toBe(ROLE_NAMES.length + 5)
 })
 
 test('pilot_real_synth_requires_account_region_and_web_dir', () => {
@@ -190,8 +191,9 @@ describe('pilot_creates_no_iam_roles', () => {
     }
     const allowedWildcards = WILDCARD_ACTIONS
     for (const [name, list] of Object.entries(policies)) {
-      // IAM enforces 10,240 characters per role inline policy and 6,144 for the managed boundary.
-      expect(JSON.stringify(policy(list)).length, name).toBeLessThan(10_240)
+      // IAM enforces 10,240 characters per role inline policy and 6,144 for the managed boundary. The
+      // cloudformation role is the union of its inline and hosting policies, measured in cloudformation-role.spec.ts.
+      if (name !== 'cloudformation') expect(JSON.stringify(policy(list)).length, name).toBeLessThan(10_240)
       for (const statement of list) {
         expect(statement.Effect).toBe('Allow')
         for (const action of statement.Action) {
@@ -220,7 +222,7 @@ describe('pilot_creates_no_iam_roles', () => {
     // Worst case: longest partition and region names inflate every ARN.
     const longest: Target = { partition: 'aws-us-gov', account: '111111111111', region: 'ap-southeast-2' }
     for (const [name, list] of Object.entries(rolePolicies(longest))) {
-      expect(JSON.stringify(policy(list)).length, `${name} (longest ARNs)`).toBeLessThan(10_240)
+      if (name !== 'cloudformation') expect(JSON.stringify(policy(list)).length, `${name} (longest ARNs)`).toBeLessThan(10_240)
     }
     expect(JSON.stringify(boundaryPolicy(longest)).length).toBeLessThan(6_144)
     expect(boundaryArn(target)).toBe('arn:aws:iam::111111111111:policy/arturia-pilot-boundary')
