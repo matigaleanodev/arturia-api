@@ -250,8 +250,9 @@ export function cloudformationPolicies(t: Target): { inline: Statement[]; hostin
       // CreateEventSourceMapping has no resource type: only the function condition can scope it.
       allow(['lambda:CreateEventSourceMapping'], ['*'],
         { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': t.region } }),
-      allow(['lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping'],
-        [a.eventSourceMappings], { StringEquals: { 'lambda:FunctionArn': consumers } }),
+      // Update and Delete are authorized on `*` too (pilot teardown, 2026-11-25): the same function condition scopes them.
+      allow(['lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping'], ['*'],
+        { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': t.region } }),
       // The delete handler reads the mapping with a request IAM authorizes on `*` (pilot teardown, 2026-11-25).
       allow(['lambda:GetEventSourceMapping'], ['*'], sameRegion(t)),
       // The publisher is a custom resource: CloudFormation invokes it and creates its AWS CLI layer.
@@ -358,7 +359,8 @@ export function boundaryPolicy(t: Target) {
     allow(['cloudfront:*'], ['distribution/*', `function/${named}`, 'origin-access-control/*', 'cache-policy/*',
       'response-headers-policy/*'].map(resource => `arn:${t.partition}:cloudfront::${t.account}:${resource}`)),
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
-      'lambda:CreateEventSourceMapping', 'lambda:GetEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies',
+      'lambda:CreateEventSourceMapping', 'lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping',
+      'lambda:GetEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies',
       'logs:DescribeResourcePolicies', 'ec2:DescribeNetworkInterfaces'], ['*'], sameRegion(t)),
     allow(['ssm:GetParameter'], arns(t).providerParameters),
     decryptProviderParameters(t, arns(t).providerParameters, arns(t).anyKey),

@@ -172,8 +172,8 @@ describe('cloudformation_role_splits_hosting_into_a_foundation_managed_policy', 
 
 describe('cloudformation_role_negative_escalation_controls', () => {
   const ALLOWED_WILDCARD = new Set(['cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain', 'ec2:DescribeNetworkInterfaces',
-    'lambda:CreateEventSourceMapping', 'lambda:GetEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies',
-    'logs:DescribeResourcePolicies'])
+    'lambda:CreateEventSourceMapping', 'lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping', 'lambda:GetEventSourceMapping',
+    'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies'])
   const FORBIDDEN = ['iam:CreateRole', 'iam:PutRolePolicy', 'iam:AttachRolePolicy', 'iam:CreatePolicyVersion', 'iam:SetDefaultPolicyVersion',
     'iam:UpdateAssumeRolePolicy', 'iam:CreateServiceLinkedRole', 'iam:DeleteRolePermissionsBoundary', 'sts:AssumeRole', 'kms:Decrypt',
     'kms:CreateGrant', 'lambda:PublishVersion', 'ec2:DescribeSubnets', 'ec2:CreateNetworkInterface', 's3:PutObject', 's3:DeleteObject',
@@ -219,12 +219,20 @@ describe('cloudformation_role_negative_escalation_controls', () => {
 test('cloudformation_role_can_tear_down_event_source_mappings_and_alert_subscriptions', () => {
   const topic = `arn:aws:sns:us-east-1:111111111111:${NAMES.alertsTopic}`
   for (const [where, list] of [['role', rolePolicies(target).cloudformation], ['boundary', statementsOf(boundaryPolicy(target))]] as const) {
-    expect(allows(list, 'lambda:GetEventSourceMapping', '*'), `${where}: GetEventSourceMapping on *`).toBe(true)
+    for (const action of ['lambda:GetEventSourceMapping', 'lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping']) {
+      expect(allows(list, action, '*'), `${where}: ${action} on *`).toBe(true)
+    }
     expect(allows(list, 'sns:Unsubscribe', topic), `${where}: Unsubscribe on the topic`).toBe(true)
     expect(allows(list, 'sns:Unsubscribe', 'arn:aws:sns:us-east-1:111111111111:other-topic'), `${where}: other topics`).toBe(false)
   }
   const wildcard = rolePolicies(target).cloudformation.find(s => s.Action.includes('lambda:GetEventSourceMapping') && s.Resource.includes('*'))
   expect(wildcard?.Condition?.StringEquals?.['aws:RequestedRegion']).toBe('us-east-1')
+  // Changing or deleting a mapping stays limited to the pilot's own consumer functions, as creating one is.
+  const mutating = rolePolicies(target).cloudformation.find(s => s.Action.includes('lambda:DeleteEventSourceMapping') && s.Resource.includes('*'))
+  expect(mutating?.Action.sort()).toEqual(['lambda:DeleteEventSourceMapping', 'lambda:UpdateEventSourceMapping'])
+  expect(mutating?.Condition?.StringEquals?.['lambda:FunctionArn']).toEqual(
+    rolePolicies(target).cloudformation.find(s => s.Action.includes('lambda:CreateEventSourceMapping'))?.Condition?.StringEquals?.['lambda:FunctionArn'])
+  expect(mutating?.Condition?.StringEquals?.['aws:RequestedRegion']).toBe('us-east-1')
 })
 
 test('event_source_mappings_reference_function_arns', () => {
