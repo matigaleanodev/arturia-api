@@ -410,7 +410,8 @@ export function operatorDenials(t: Target) {
       'secretsmanager:ReplicateSecretToRegions'], [a.providerSecret]),
     deny(['dynamodb:DeleteItem', 'dynamodb:BatchWriteItem', 'dynamodb:DeleteTable', 'dynamodb:UpdateTable',
       'dynamodb:UpdateContinuousBackups', 'dynamodb:UpdateTimeToLive', 'dynamodb:PutResourcePolicy',
-      'dynamodb:DeleteResourcePolicy'], [a.ledger]),
+      'dynamodb:DeleteResourcePolicy', 'dynamodb:PartiQLDelete', 'dynamodb:PartiQLUpdate', 'dynamodb:PartiQLInsert',
+      'dynamodb:ImportTable', 'dynamodb:RestoreTableFromAwsBackup'], [a.ledger]),
   ])
 }
 

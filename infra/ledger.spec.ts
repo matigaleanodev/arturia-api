@@ -88,7 +88,7 @@ describe('ledger_permissions_are_item_level_and_least_privilege', () => {
     const managed = operatorManagedPolicy(target).Statement as Statement[]
     const actions = denied(managed, ledgerArn)
     for (const action of ['DeleteItem', 'BatchWriteItem', 'DeleteTable', 'UpdateTable', 'UpdateContinuousBackups', 'UpdateTimeToLive',
-      'PutResourcePolicy', 'DeleteResourcePolicy']) expect(actions, action).toContain('dynamodb:' + action)
+      'PutResourcePolicy', 'DeleteResourcePolicy', 'PartiQLDelete', 'PartiQLUpdate', 'PartiQLInsert', 'ImportTable', 'RestoreTableFromAwsBackup']) expect(actions, action).toContain('dynamodb:' + action)
     // What settlement needs is never denied, and the chat table is untouched by these denials.
     for (const action of ['GetItem', 'Query', 'PutItem', 'UpdateItem', 'ConditionCheckItem', 'DescribeTable']) {
       expect(actions, action).not.toContain('dynamodb:' + action)
