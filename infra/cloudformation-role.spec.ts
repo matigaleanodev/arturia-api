@@ -172,7 +172,8 @@ describe('cloudformation_role_splits_hosting_into_a_foundation_managed_policy', 
 
 describe('cloudformation_role_negative_escalation_controls', () => {
   const ALLOWED_WILDCARD = new Set(['cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain', 'ec2:DescribeNetworkInterfaces',
-    'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies'])
+    'lambda:CreateEventSourceMapping', 'lambda:GetEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies',
+    'logs:DescribeResourcePolicies'])
   const FORBIDDEN = ['iam:CreateRole', 'iam:PutRolePolicy', 'iam:AttachRolePolicy', 'iam:CreatePolicyVersion', 'iam:SetDefaultPolicyVersion',
     'iam:UpdateAssumeRolePolicy', 'iam:CreateServiceLinkedRole', 'iam:DeleteRolePermissionsBoundary', 'sts:AssumeRole', 'kms:Decrypt',
     'kms:CreateGrant', 'lambda:PublishVersion', 'ec2:DescribeSubnets', 'ec2:CreateNetworkInterface', 's3:PutObject', 's3:DeleteObject',
@@ -211,6 +212,19 @@ describe('cloudformation_role_negative_escalation_controls', () => {
     const tagged = rolePolicies(target).cloudformation.filter(s => JSON.stringify(s.Condition ?? {}).includes('aws:ResourceTag'))
     expect(tagged).toEqual([])
   })
+})
+
+// Found by the pilot teardown (2026-11-25): the delete handlers read an event source mapping with a request that
+// IAM authorizes on `*`, and unsubscribe from the topic, not from a subscription ARN. The stack stayed in DELETE_FAILED.
+test('cloudformation_role_can_tear_down_event_source_mappings_and_alert_subscriptions', () => {
+  const topic = `arn:aws:sns:us-east-1:111111111111:${NAMES.alertsTopic}`
+  for (const [where, list] of [['role', rolePolicies(target).cloudformation], ['boundary', statementsOf(boundaryPolicy(target))]] as const) {
+    expect(allows(list, 'lambda:GetEventSourceMapping', '*'), `${where}: GetEventSourceMapping on *`).toBe(true)
+    expect(allows(list, 'sns:Unsubscribe', topic), `${where}: Unsubscribe on the topic`).toBe(true)
+    expect(allows(list, 'sns:Unsubscribe', 'arn:aws:sns:us-east-1:111111111111:other-topic'), `${where}: other topics`).toBe(false)
+  }
+  const wildcard = rolePolicies(target).cloudformation.find(s => s.Action.includes('lambda:GetEventSourceMapping') && s.Resource.includes('*'))
+  expect(wildcard?.Condition?.StringEquals?.['aws:RequestedRegion']).toBe('us-east-1')
 })
 
 test('event_source_mappings_reference_function_arns', () => {

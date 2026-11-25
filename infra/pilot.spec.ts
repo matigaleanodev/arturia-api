@@ -43,7 +43,7 @@ const glob = (pattern: string) =>
 const covers = (ceiling: Statement[], action: string, resource: string) => ceiling.some(statement =>
   statement.Action.some(pattern => glob(pattern).test(action)) && statement.Resource.some(pattern => glob(pattern).test(resource)))
 const WILDCARD_ACTIONS = new Set(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
-  'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
+  'lambda:CreateEventSourceMapping', 'lambda:GetEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
   'ec2:DescribeNetworkInterfaces'])
 
 test('pilot_synth_with_code_assets_succeeds', () => {

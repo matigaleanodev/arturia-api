@@ -252,7 +252,8 @@ export function cloudformationPolicies(t: Target): { inline: Statement[]; hostin
         { StringEquals: { 'lambda:FunctionArn': consumers, 'aws:RequestedRegion': t.region } }),
       allow(['lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping'],
         [a.eventSourceMappings], { StringEquals: { 'lambda:FunctionArn': consumers } }),
-      allow(['lambda:GetEventSourceMapping'], [a.eventSourceMappings]),
+      // The delete handler reads the mapping with a request IAM authorizes on `*` (pilot teardown, 2026-11-25).
+      allow(['lambda:GetEventSourceMapping'], ['*'], sameRegion(t)),
       // The publisher is a custom resource: CloudFormation invokes it and creates its AWS CLI layer.
       allow(['lambda:InvokeFunction'], [a.fn(NAMES.publisherFunction)]),
       allow(['lambda:PublishLayerVersion'], [a.layer]),
@@ -323,6 +324,8 @@ export function cloudformationPolicies(t: Target): { inline: Statement[]; hostin
         'sns:GetDataProtectionPolicy',
       ], [a.topic]),
       allow(['sns:Unsubscribe', 'sns:GetSubscriptionAttributes', 'sns:SetSubscriptionAttributes'], [a.subscriptions]),
+      // The subscription delete handler unsubscribes authorized on the topic ARN, not on the subscription's.
+      allow(['sns:Unsubscribe'], [a.topic]),
     ],
   }
 }
@@ -355,8 +358,8 @@ export function boundaryPolicy(t: Target) {
     allow(['cloudfront:*'], ['distribution/*', `function/${named}`, 'origin-access-control/*', 'cache-policy/*',
       'response-headers-policy/*'].map(resource => `arn:${t.partition}:cloudfront::${t.account}:${resource}`)),
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
-      'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
-      'ec2:DescribeNetworkInterfaces'], ['*'], sameRegion(t)),
+      'lambda:CreateEventSourceMapping', 'lambda:GetEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies',
+      'logs:DescribeResourcePolicies', 'ec2:DescribeNetworkInterfaces'], ['*'], sameRegion(t)),
     allow(['ssm:GetParameter'], arns(t).providerParameters),
     decryptProviderParameters(t, arns(t).providerParameters, arns(t).anyKey),
     allow(['iam:PassRole'], [`arn:${t.partition}:iam::${t.account}:role/${named}`]),
