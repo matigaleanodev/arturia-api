@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { TIMING } from '../config/timing.js'
 import { count, createAdapter, record, string, tool, type ModelWire } from './wire.js'
 
-export function createAnthropicAdapter(wire: ModelWire, timeoutMs = 40_000) {
+export const anthropicContextWindow = 1_000_000
+
+export function createAnthropicAdapter(wire: ModelWire, timeoutMs = TIMING.transportTimeoutSeconds * 1000) {
   return createAdapter({
     provider: 'anthropic',
     model: 'claude-sonnet-5-5',
-    contextWindow: 1_000_000,
+    contextWindow: anthropicContextWindow,
     minOutputTokens: 1,
     rejectedBeforeGeneration: [413],
     path: '/v1/messages',

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { TIMING } from '../config/timing.js'
 import { count, createAdapter, record, string, tool, type ModelWire } from './wire.js'
 
 export const openAIMinOutputTokens = 16
 
-export function createOpenAIAdapter(wire: ModelWire, timeoutMs = 40_000) {
+export const openAIContextWindow = 1_050_000
+
+export function createOpenAIAdapter(wire: ModelWire, timeoutMs = TIMING.transportTimeoutSeconds * 1000) {
   return createAdapter({
     provider: 'openai',
     model: 'gpt-6-luna',
-    contextWindow: 1_050_000,
+    contextWindow: openAIContextWindow,
     minOutputTokens: openAIMinOutputTokens,
     path: '/v1/responses',
     build: ({ model, text, limits }) => ({

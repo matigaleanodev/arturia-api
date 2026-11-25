@@ -117,6 +117,10 @@ export function createAdapter(protocol: Protocol, wire: ModelWire, timeoutMs: nu
           limits.reasoningTokens !== 0 || limits.toolTokens !== 0 || limits.toolCalls !== 0) {
         throw new ModelPolicyDenied('Invalid model attempt configuration')
       }
+      if (request.inputTokenBound !== undefined && (!isCount(request.inputTokenBound) || request.inputTokenBound > protocol.contextWindow)) {
+        throw new ModelPolicyDenied('Invalid model attempt configuration')
+      }
+      const inputBound = request.inputTokenBound ?? protocol.contextWindow
       const controller = new AbortController()
       const signal = AbortSignal.any([request.signal, controller.signal])
       const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -151,7 +155,7 @@ export function createAdapter(protocol: Protocol, wire: ModelWire, timeoutMs: nu
             const { usage } = event
             const totalOutput = usage.outputTokens + usage.reasoningTokens + usage.toolTokens
             if (emittedOutput && (usage.outputTokens === 0 || event.noCharge)) throw new Error('Inconsistent model usage')
-            if (usage.inputTokens > protocol.contextWindow || totalOutput > limits.outputTokens || usage.toolCalls) {
+            if (usage.inputTokens > inputBound || totalOutput > limits.outputTokens || usage.toolCalls) {
               yield { ...event, failed: true }
             } else yield event
             return

@@ -21,6 +21,8 @@ export interface ModelOutbound {
   readonly attemptId: string
   readonly text: string
   readonly limits: Limits
+  /** The input bound the reservation was computed with. Reported usage above it marks the attempt failed. */
+  readonly inputTokenBound?: number
   readonly signal: AbortSignal
 }
 export type ModelEvent = ProviderEvent |
@@ -59,7 +61,8 @@ export async function* dispatchModel(budget: ModelBudget, now: () => Date, confi
   const initial = options()
   const { provider, model, limits, tariff } = initial
   const text = safeModelText(await job.readAuthorizedContext(provider))
-  const maxCost = costMicros(tariff, { ...limits, inputTokens: transport.inputTokenBound(text, model) })
+  const inputTokenBound = transport.inputTokenBound(text, model)
+  const maxCost = costMicros(tariff, { ...limits, inputTokens: inputTokenBound })
   job.signal.throwIfAborted()
   const receipt = await budget.reserveAttempt(job.attemptId, job.userId, job.scopeId, provider, maxCost,
     { model, operation: job.operation, tariff, ...(job.turnId && { turnId: job.turnId }) })
@@ -80,7 +83,7 @@ export async function* dispatchModel(budget: ModelBudget, now: () => Date, confi
   let failed = false
   let noCharge = false
   try {
-    for await (const event of transport.stream({ attemptId: job.attemptId, provider, model, text, signal: job.signal, limits })) {
+    for await (const event of transport.stream({ attemptId: job.attemptId, provider, model, text, signal: job.signal, limits, inputTokenBound })) {
       if (usage) throw new Error('Unexpected event after final usage')
       if (event.type === 'usage') {
         usage = event.usage

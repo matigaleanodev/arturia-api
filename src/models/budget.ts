@@ -8,7 +8,7 @@ import type { ChatStore } from '../chat/turns.store.js'
 import { ModelPolicyDenied } from './provider.js'
 
 const MILLION = 1_000_000
-const MONTHLY_CAP = 10 * MILLION
+export const MONTHLY_CAP = 10 * MILLION
 const uint = (n: number) => Number.isSafeInteger(n) && n >= 0
 export interface Tariff {
   readonly verifiedAt: number
@@ -80,7 +80,7 @@ export function costMicros(tariff: Tariff, usage: Usage) {
 
 export class ModelBudget {
   constructor(private readonly store: Pick<ChatStore, 'tableName' | 'read' | 'now' | 'db'>,
-    private readonly caps: Readonly<Record<string, number>>) {}
+    readonly caps: Readonly<Record<string, number>>) {}
 
   getAttempt(attemptId: string) {
     const { pk, sk } = attemptKey(attemptId)
