@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 Matias Galeano
+
+import { CORS_ORIGIN_VARIABLE, isAllowedOrigin } from '../http/cors.js'
+import { ENABLED_CATALOG_MODELS, PROVIDER_PARAMETER_VARIABLE, isFreshDay, isProviderParameterPrefix } from './catalog-config.js'
+
+type Environment = Readonly<Record<string, string | undefined>>
+
+/** Invalid deployment configuration. The message names variables only, never their values. */
+export class ConfigError extends Error {
+  constructor(readonly variables: readonly string[]) {
+    super('Invalid runtime configuration: ' + variables.join(', '))
+    this.name = 'ConfigError'
+  }
+}
+
+export const PROVIDER_MODES = ['fixture', 'fail', 'catalog'] as const
+export type ProviderMode = typeof PROVIDER_MODES[number]
+export interface HttpRuntime { readonly tableName: string; readonly clientId: string; readonly allowedOrigin: string }
+export interface WorkerRuntime { readonly tableName: string; readonly environment: string; readonly providerMode: ProviderMode }
+
+const tableName = /^[A-Za-z0-9_.-]{3,255}$/
+const clientId = /^[A-Za-z0-9]{1,128}$/
+const environment = /^[a-z][a-z0-9-]{0,31}$/
+
+function reader(env: Environment) {
+  const invalid: string[] = []
+  const read = (name: string, valid: (value: string) => boolean) => {
+    const value = env[name]
+    if (typeof value === 'string' && valid(value)) return value
+    invalid.push(name)
+    return ''
+  }
+  const done = () => { if (invalid.length) throw new ConfigError(invalid) }
+  return { read, done }
+}
+
+export function loadHttpRuntime(env: Environment): HttpRuntime {
+  const { read, done } = reader(env)
+  const runtime = {
+    tableName: read('ARTURIA_TABLE_NAME', v => tableName.test(v)), clientId: read('ARTURIA_CLIENT_ID', v => clientId.test(v)),
+    allowedOrigin: read(CORS_ORIGIN_VARIABLE, isAllowedOrigin),
+  }
+  done()
+  return runtime
+}
+
+export function loadWorkerRuntime(env: Environment): WorkerRuntime {
+  const { read, done } = reader(env)
+  const runtime = {
+    tableName: read('ARTURIA_TABLE_NAME', v => tableName.test(v)),
+    environment: read('ARTURIA_ENVIRONMENT', v => environment.test(v)),
+    providerMode: read('ARTURIA_PROVIDER_MODE', v => (PROVIDER_MODES as readonly string[]).includes(v)) as ProviderMode,
+  }
+  done()
+  return runtime
+}
+
+export interface LedgerRuntime { readonly ledgerTableName: string }
+
+/**
+ * The AI consumption ledger lives in its own retained table. It must differ from the chat table, or
+ * recreating the chat table would reset the monthly consumption. Required only where a billable provider can run.
+ */
+export function loadLedgerRuntime(env: Environment): LedgerRuntime {
+  const { read, done } = reader(env)
+  const ledgerTableName = read('ARTURIA_LEDGER_TABLE_NAME', v => tableName.test(v) && v !== env.ARTURIA_TABLE_NAME)
+  done()
+  return { ledgerTableName }
+}
+
+export interface CatalogRuntime { readonly parameterPrefix: string; readonly model: string; readonly tariffVerifiedAt: string }
+
+/**
+ * Configuration of the billable `catalog` mode. Fails closed on the parameter reference (exactly the fixed Parameter
+ * Store prefix; the keys themselves are never in the environment), on a model outside the catalog and on a tariff verification date that is invalid, in the
+ * future or older than 90 days. Calibration and prices are never read from the environment.
+ */
+export function loadCatalogRuntime(env: Environment, now: Date = new Date()): CatalogRuntime {
+  const { read, done } = reader(env)
+  const runtime = {
+    parameterPrefix: read(PROVIDER_PARAMETER_VARIABLE, isProviderParameterPrefix),
+    model: read('ARTURIA_MODEL', v => ENABLED_CATALOG_MODELS.includes(v)),
+    tariffVerifiedAt: read('ARTURIA_TARIFF_VERIFIED_AT', v => isFreshDay(v, now)),
+  }
+  done()
+  return runtime
+}
+
+/** Evaluates once per execution environment and keeps either the value or the failure. */
+export function memoize<T>(load: () => T): () => T {
+  let state: { ok: true; value: T } | { ok: false; error: unknown } | undefined
+  return () => {
+    if (!state) {
+      try { state = { ok: true, value: load() } } catch (error) { state = { ok: false, error } }
+    }
+    if (!state.ok) throw state.error
+    return state.value
+  }
+}

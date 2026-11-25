@@ -1,0 +1,37 @@
+[
+  {
+    "type": "response.output_text.delta",
+    "delta": "¡Hola!"
+  },
+  {
+    "type": "response.reasoning_summary_text.delta",
+    "delta": "razonamiento sintético"
+  },
+  {
+    "type": "response.function_call_arguments.delta",
+    "delta": "{\"city\":"
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_fixture",
+      "name": "weather",
+      "arguments": "{\"city\":\"Mar del Plata\"}"
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "status": "completed",
+      "usage": {
+        "input_tokens": 12,
+        "output_tokens": 10,
+        "output_tokens_details": {
+          "reasoning_tokens": 4
+        }
+      }
+    }
+  }
+]

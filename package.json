@@ -1,0 +1,50 @@
+{
+  "name": "arturia-api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test:contract": "node scripts/test-contract.mjs",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "verify": "node scripts/verify.mjs",
+    "verify:integrated": "exec node scripts/verify-integrated.mjs",
+    "verify:local": "node scripts/verify.mjs --local",
+    "build": "tsc --project tsconfig.json && tsc --project tsconfig.build.json && npm run bundle",
+    "test": "npm run test:contract && npm run test:unit && npm run test:infra",
+    "test:infra": "vitest run --project infra",
+    "synth": "cdk synth --no-lookups --no-telemetry --no-notices",
+    "bundle": "node scripts/bundle.mjs",
+    "synth:pilot": "npm run bundle && cdk synth --no-lookups --no-telemetry --no-notices --output cdk.pilot.out -c arturia:target=pilot",
+    "provision:pilot": "tsc --project tsconfig.build.json && node scripts/provision-pilot.mjs",
+    "settle:attempts": "tsc --project tsconfig.build.json && node scripts/settle-attempts.mjs",
+    "republish:outbox": "tsc --project tsconfig.build.json && node scripts/republish-outbox.mjs",
+    "pilot:inspect": "tsc --project tsconfig.build.json && node scripts/pilot-inspect.mjs",
+    "smoke:sse:aws": "tsc --project tsconfig.build.json && node scripts/smoke-sse.mjs",
+    "synth:foundation": "cdk synth --no-lookups --no-telemetry --no-notices --app \"node infra/foundation-app.ts\" --output cdk.foundation.out"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "13.1.0",
+    "@types/node": "24.19.2",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "aws-cdk": "2.1149.0",
+    "rolldown": "1.2.19",
+    "typescript": "6.0.3",
+    "vitest": "5.1.1"
+  },
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": "24.22.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1175.0",
+    "@aws-sdk/client-sqs": "3.1175.0",
+    "@aws-sdk/client-ssm": "3.1175.0",
+    "@aws-sdk/lib-dynamodb": "3.1175.0",
+    "aws-cdk-lib": "2.278.0",
+    "aws-jwt-verify": "5.2.1",
+    "constructs": "10.8.1"
+  },
+  "packageManager": "npm@11.19.1"
+}
