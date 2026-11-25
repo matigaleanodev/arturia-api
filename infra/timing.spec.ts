@@ -4,7 +4,7 @@
 import { App, Stack, aws_lambda as lambda } from 'aws-cdk-lib'
 import { Template } from 'aws-cdk-lib/assertions'
 import { expect, test } from 'vitest'
-import { TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
+import { PERSISTENCE_BACKOFF_ALLOWANCE_MS, PERSISTENCE_SLACK_MS, TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
 import { addOutbox } from './outbox.ts'
 import { addWorker } from './worker.ts'
 
@@ -44,8 +44,26 @@ test.each([
   ['concurrency below the AWS minimum', { workerMaxConcurrency: 1 }],
   ['SSE function not below its integration', { sseFunctionTimeoutSeconds: 29 }],
   ['non-integer duration', { leaseSeconds: 75.5 }],
+  ['transport timeout not below the provider timeout', { transportTimeoutSeconds: 45 }],
+  ['transport timeout above the adapter maximum', { transportTimeoutSeconds: 46, providerTimeoutSeconds: 47, closeMarginSeconds: 12, workerTimeoutSeconds: 60 }],
+  ['persistence worst case above the closing margin', { persistenceRequestTimeoutMs: 3000 }],
+  ['persistence retries above the closing margin', { persistenceMaxAttempts: 4 }],
+  ['persistence without retries budget', { persistenceMaxAttempts: 0 }],
+  ['closing margin too small for three persistence operations', { closeMarginSeconds: 11 }],
+  ['non-integer persistence timeout', { persistenceConnectTimeoutMs: 500.5 }],
 ] as const)('check_timing_rejects_%s', (_name, override) => {
   expect(() => checkTiming({ ...TIMING, ...override })).toThrow(RangeError)
+})
+
+test('persistence_and_transport_timeouts_fit_the_closing_margin', () => {
+  const t = checkTiming(TIMING)
+  // Three operations can run past the provider deadline (a poll or flush already started, the final flush and
+  // the terminal write), each with its retries.
+  const operation = t.persistenceMaxAttempts * (t.persistenceConnectTimeoutMs + t.persistenceRequestTimeoutMs) +
+    (t.persistenceMaxAttempts - 1) * PERSISTENCE_BACKOFF_ALLOWANCE_MS
+  expect(3 * operation + PERSISTENCE_SLACK_MS).toBeLessThanOrEqual(t.closeMarginSeconds * 1000)
+  expect(t.transportTimeoutSeconds).toBeLessThan(t.providerTimeoutSeconds)
+  expect(t.persistenceMaxAttempts).toBe(2)
 })
 
 test('synth_rejects_visibility_not_above_worker_timeout', () => {

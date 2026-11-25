@@ -2,18 +2,20 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { randomUUID } from 'node:crypto'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { createDynamoClient } from '../config/clients.js'
 import { ConfigError, loadWorkerRuntime, memoize } from '../config/runtime.js'
 import { pilotFixture } from '../models/fixture-provider.js'
 import { createLog, type Log } from '../observability/log.js'
-import { createGenerationWorker } from './generate.worker.js'
+import { createGenerationWorker, type Remaining } from './generate.worker.js'
 import { ChatStore } from './turns.store.js'
 import type { TurnReference } from './turns.types.js'
 
 interface QueueRecord { readonly messageId: string; readonly body: string }
 interface QueueEvent { readonly Records: readonly QueueRecord[] }
 interface BatchResponse { batchItemFailures: { itemIdentifier: string }[] }
-type RunTurn = (ref: TurnReference, attemptId: string) => Promise<'done' | 'retry'>
+type RunTurn = (ref: TurnReference, attemptId: string, remaining?: Remaining) => Promise<'done' | 'retry'>
+/** The part of the Lambda context the worker needs. */
+export interface WorkerContext { getRemainingTimeInMillis(): number }
 
 /** The pilot `fail` mode: the turn is never run, so the queue redelivers it until the DLQ. */
 export class InjectedFailure extends Error { override name = 'InjectedFailure' }
@@ -35,7 +37,8 @@ export function parseTurnMessage(body: string): TurnReference {
  */
 export function createWorkerHandler(deps: { run: RunTurn; log: Log; newAttemptId?: () => string }) {
   const { run, log, newAttemptId = randomUUID } = deps
-  return async (event: QueueEvent): Promise<BatchResponse> => {
+  return async (event: QueueEvent, context?: WorkerContext): Promise<BatchResponse> => {
+    const remaining: Remaining | undefined = context ? () => context.getRemainingTimeInMillis() : undefined
     const batchItemFailures: { itemIdentifier: string }[] = []
     for (const { messageId, body } of event.Records) {
       if (batchItemFailures.length) { batchItemFailures.push({ itemIdentifier: messageId }); continue }
@@ -47,7 +50,7 @@ export function createWorkerHandler(deps: { run: RunTurn; log: Log; newAttemptId
       }
       const attemptId = newAttemptId()
       try {
-        const outcome = await run(ref, attemptId)
+        const outcome = await run(ref, attemptId, remaining)
         log(outcome === 'done' ? 'info' : 'warn', outcome === 'done' ? 'TURN_DONE' : 'TURN_RETRY', { messageId, turnId: ref.turnId, attemptId })
         if (outcome === 'retry') batchItemFailures.push({ itemIdentifier: messageId })
       } catch (error) {
@@ -65,11 +68,11 @@ const consumer = memoize(() => {
   const runtime = loadWorkerRuntime(process.env)
   const fixture = pilotFixture(runtime)
   if (fixture.kind === 'fail') return createWorkerHandler({ log, run: async () => { throw new InjectedFailure() } })
-  const worker = createGenerationWorker(new ChatStore(new DynamoDBClient({}), runtime.tableName), fixture.provider)
-  return createWorkerHandler({ log, run: (ref, attemptId) => worker.runTurn(ref, attemptId) })
+  const worker = createGenerationWorker(new ChatStore(createDynamoClient(), runtime.tableName), fixture.provider)
+  return createWorkerHandler({ log, run: (ref, attemptId, remaining) => worker.runTurn(ref, attemptId, remaining) })
 })
 
-export async function handler(event: QueueEvent): Promise<BatchResponse> {
+export async function handler(event: QueueEvent, context: WorkerContext): Promise<BatchResponse> {
   let consume: ReturnType<typeof consumer>
   try {
     consume = consumer()
@@ -78,5 +81,5 @@ export async function handler(event: QueueEvent): Promise<BatchResponse> {
     // Fail the whole invocation: every message returns to the queue and Lambda reports an error.
     throw new Error('Invalid runtime configuration')
   }
-  return consume(event)
+  return consume(event, context)
 }

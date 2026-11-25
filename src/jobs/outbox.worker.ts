@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { createDynamoClient } from '../config/clients.js'
 import { SQSClient } from '@aws-sdk/client-sqs'
 import { ChatStore } from '../chat/turns.store.js'
 import type { TurnReference } from '../chat/turns.types.js'
@@ -43,7 +43,7 @@ export async function relayBatch(event: StreamBatch, publish: (ref: TurnReferenc
   return { batchItemFailures: [] }
 }
 
-const dynamo = new DynamoDBClient({})
+const dynamo = createDynamoClient()
 const sqs = new SQSClient({})
 export function handler(event: StreamBatch) {
   const { ARTURIA_TABLE_NAME, ARTURIA_TURN_QUEUE_URL } = process.env

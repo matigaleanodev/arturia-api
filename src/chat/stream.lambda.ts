@@ -4,7 +4,7 @@
 import { once } from 'node:events'
 import { type Writable } from 'node:stream'
 import { finished } from 'node:stream/promises'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { createDynamoClient } from '../config/clients.js'
 import { GetCommand } from '@aws-sdk/lib-dynamodb'
 import { gatewayClaims } from '../http/auth.js'
 import { corsHeaders, readAllowedOrigin } from '../http/cors.js'
@@ -27,7 +27,7 @@ const clientId = process.env.ARTURIA_CLIENT_ID!
 // Without a valid configured origin no origin is named and browsers cannot read the stream.
 const allowedOrigin = readAllowedOrigin(process.env)
 const cors = allowedOrigin ? corsHeaders(allowedOrigin) : {}
-const store = new ChatStore(new DynamoDBClient({}), tableName)
+const store = new ChatStore(createDynamoClient(), tableName)
 const streamHttp = createStreamHttp(createStreamReader(dynamoStreamSource(store)))
 
 // Only trusted requestContext claims may select the existing Arturia session.

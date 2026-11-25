@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { createDynamoClient } from '../config/clients.js'
 import { createChat } from '../chat/turns.js'
 import { ChatStore } from '../chat/turns.store.js'
 import { ConfigError, loadHttpRuntime, memoize } from '../config/runtime.js'
@@ -13,7 +13,7 @@ const log = createLog()
 // Read once per execution environment; an invalid configuration fails every request closed.
 const adapter = memoize(() => {
   const runtime = loadHttpRuntime(process.env)
-  const store = new ChatStore(new DynamoDBClient({}), runtime.tableName)
+  const store = new ChatStore(createDynamoClient(), runtime.tableName)
   return createLambdaAdapter({ chat: createChat(store), identity: store, clientId: runtime.clientId, allowedOrigin: runtime.allowedOrigin, log })
 })
 

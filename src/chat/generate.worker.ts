@@ -8,10 +8,18 @@ import { ChatError, type TurnReference } from './turns.types.js'
 import { active, blockTurn, changeTurn, GenerationAttempt, publicFault, readRow, type FaultCode } from './generation.store.js'
 
 interface Options {
+  /** Provider deadline. The effective deadline is further clamped to the time left in the invocation. */
   readonly timeoutMs?: number
   readonly leaseMs?: number
   readonly pollMs?: number
+  /** Time reserved after the provider deadline for the final flush and the terminal write. */
+  readonly closeMarginMs?: number
+  /** Least provider window worth starting: below it the turn is retried before claiming it or sending anything. */
+  readonly minProviderMs?: number
 }
+/** Milliseconds left in the invocation (Lambda `getRemainingTimeInMillis`). */
+export type Remaining = () => number
+export const MIN_PROVIDER_WINDOW_MS = 5_000
 class LeaseLost extends Error {}
 const fenced = (won: boolean) => { if (!won) throw new LeaseLost() }
 const isDenied = (err: unknown) => err instanceof ChatError && err.status === 403
@@ -38,19 +46,26 @@ async function checkLive(attempt: GenerationAttempt) {
   fenced(row?.status === 'running' && row.leaseId === attempt.leaseId && row.leaseUntil! > attempt.store.now().getTime())
 }
 
-async function generate(attempt: GenerationAttempt, provider: Provider, timeoutMs: number, pollMs: number) {
+async function generate(attempt: GenerationAttempt, provider: Provider, timeoutMs: number, pollMs: number,
+  closeMarginMs: number, minProviderMs: number, remaining?: Remaining) {
   const { store, ref } = attempt
   const input = await store.read(turnKey(ref).pk, attempt.row.messageSk)
   if (typeof input?.text !== 'string' || input.turnId !== ref.turnId) throw new Error('Missing turn input')
   await attempt.authorize()
+  // The reads above and the claim consumed time: with no provider window left, retry before the send intent is
+  // persisted, so the turn is not left `uncertain` for a call that was never going to happen.
+  if (remaining && remaining() - closeMarginMs < minProviderMs) throw new LeaseLost()
   // Persist intent before crossing the provider boundary. A process death
   // between these operations must conservatively leave an uncertain send.
   fenced(await attempt.update('SET sendState = :uncertain', { ':uncertain': 'uncertain' }, ' AND attribute_not_exists(sendState)'))
   await checkLive(attempt)
   const controller = new AbortController()
-  const deadline = performance.now() + timeoutMs
+  // The reads above count against the invocation: the deadline is whatever is left once the closing margin
+  // is set aside, never more than the configured provider timeout.
+  const providerMs = Math.min(timeoutMs, remaining ? remaining() - closeMarginMs : timeoutMs)
+  const deadline = performance.now() + providerMs
   const expired = () => controller.signal.aborted || performance.now() >= deadline
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const timeout = setTimeout(() => controller.abort(), Math.max(providerMs, 0))
   let iterator: AsyncIterator<ProviderEvent> | undefined
   let fault: FaultCode | undefined
   let seq = 0
@@ -68,7 +83,10 @@ async function generate(attempt: GenerationAttempt, provider: Provider, timeoutM
     flushAt = Infinity
   }
   try {
-    try {
+    // Too little time left for a provider window (the intent is already persisted): nothing crosses the boundary
+    // and the turn ends as timed out.
+    if (providerMs < Math.min(minProviderMs, timeoutMs)) fault = 'GENERATION_TIMEOUT'
+    else try {
       iterator = provider.stream({ ref, leaseId: attempt.leaseId, sessionId: attempt.row.sessionId,
         messageSk: attempt.row.messageSk, attemptId: attempt.attemptId, text: input.text, signal: controller.signal })[Symbol.asyncIterator]()
     } catch (err) {
@@ -132,17 +150,22 @@ export function createGenerationWorker(store: ChatStore, provider: Provider, opt
   const timeoutMs = options.timeoutMs ?? TIMING.providerTimeoutSeconds * 1000
   const leaseMs = options.leaseMs ?? (options.timeoutMs === undefined ? TIMING.leaseSeconds * 1000 : timeoutMs + 30_000)
   const pollMs = options.pollMs ?? 500
-  if (![timeoutMs, leaseMs, pollMs].every(n => Number.isSafeInteger(n) && n > 0) || leaseMs <= timeoutMs) {
-    throw new RangeError('Generation requires positive durations and a lease longer than the provider timeout')
+  const closeMarginMs = options.closeMarginMs ?? TIMING.closeMarginSeconds * 1000
+  const minProviderMs = options.minProviderMs ?? MIN_PROVIDER_WINDOW_MS
+  if (![timeoutMs, leaseMs, pollMs, closeMarginMs, minProviderMs].every(n => Number.isSafeInteger(n) && n > 0) ||
+      leaseMs <= timeoutMs + closeMarginMs) {
+    throw new RangeError('Generation requires positive durations and a lease longer than the provider timeout plus the closing margin')
   }
 
   return {
     // Queue consumers must redeliver 'retry' (busy or expired lease) and
     // infrastructure failures. Only a durable terminal state can be acknowledged.
-    async runTurn(ref: TurnReference, attemptId: string): Promise<'done' | 'retry'> {
+    async runTurn(ref: TurnReference, attemptId: string, remaining?: Remaining): Promise<'done' | 'retry'> {
       const row = await readRow(store, ref)
       if (!row || !active(row.status)) return 'done'
       if (row.status === 'running' && row.leaseUntil! > store.now().getTime()) return 'retry'
+      // Recovering an uncertain send never calls the provider. Anything else needs a real provider window.
+      if (row.sendState !== 'uncertain' && remaining && remaining() - closeMarginMs < minProviderMs) return 'retry'
       const attempt = new GenerationAttempt(store, ref, attemptId, row)
       let owned = row
       try {
@@ -158,7 +181,7 @@ export function createGenerationWorker(store: ChatStore, provider: Provider, opt
         } else {
           fenced(await attempt.claim(leaseMs))
           owned = { ...row, status: 'running', leaseId: attempt.leaseId }
-          await generate(attempt, provider, timeoutMs, pollMs)
+          await generate(attempt, provider, timeoutMs, pollMs, closeMarginMs, minProviderMs, remaining)
         }
         return 'done'
       } catch (error) {
