@@ -424,6 +424,11 @@ describe('web_dist_is_checked_before_synthesis', () => {
     expect(() => checkWebDist(WEB_FIXTURE_DIR)).not.toThrow()
   })
 
+  test('accepts the mixed-case content hash of Angular chunks', () => {
+    const { dist } = webCheckout(dist => writeFileSync(join(dist, 'chunk-CRaV4qYR.js'), ''))
+    expect(() => checkWebDist(dist)).not.toThrow()
+  })
+
   test.each([
     ['without index.html', (dist: string) => rmSync(join(dist, 'index.html')), /index\.html/],
     ['with a config.json', (dist: string) => writeFileSync(join(dist, CONFIG_KEY), '{}'), /config\.json/],

@@ -22,7 +22,7 @@ export const CACHE_CONTROL = {
   revalidate: 'no-cache',
   config: 'no-store',
 } as const
-const HASHED = /-[A-Z0-9]{8}\.[A-Za-z0-9]+$/
+const HASHED = /-[A-Za-z0-9]{8}\.[A-Za-z0-9]+$/
 
 /**
  * Viewer-request rewrite for client-side routes: a path whose last segment has no extension serves
