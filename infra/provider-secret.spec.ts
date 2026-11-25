@@ -3,7 +3,7 @@
 
 import { expect, test } from 'vitest'
 import { PROVIDER_SECRET_NAME, isProviderSecretArn } from '../src/secrets/provider-secret.ts'
-import { NAMES, boundaryPolicy, operatorPolicy, rolePolicies, type Statement, type Target } from './delivery.ts'
+import { NAMES, boundaryPolicy, operatorManagedPolicy, operatorPolicy, rolePolicies, type Statement, type Target } from './delivery.ts'
 
 const target: Target = { partition: 'aws', account: '111111111111', region: 'us-east-1' }
 const secretStatements = (list: readonly Statement[]) => list.filter(s => s.Action.some(action => action.startsWith('secretsmanager:')))
@@ -33,4 +33,20 @@ test('secret_grant_limited_to_one_arn', () => {
   expect(matches('arn:aws:secretsmanager:us-east-1:111111111111:secret:arturia-pilot/providers-other-AbCdEf')).toBe(false)
   expect(matches('arn:aws:secretsmanager:us-east-1:111111111111:secret:arturia-pilot/providers2-AbCdEf')).toBe(false)
   expect(isProviderSecretArn('arn:aws:secretsmanager:us-east-1:111111111111:secret:arturia-pilot/providers-AbCdEf')).toBe(true)
+})
+
+test('operator_cannot_read_write_or_delete_the_secret_value', () => {
+  // The account-wide Architect policy allows these on any secret. An explicit deny wins over it.
+  const managed = operatorManagedPolicy(target).Statement as Statement[]
+  const denies = secretStatements(managed).filter(s => s.Effect === 'Deny')
+  expect(denies).toHaveLength(1)
+  expect(denies[0]!.Resource).toEqual([pattern])
+  for (const action of ['GetSecretValue', 'BatchGetSecretValue', 'PutSecretValue', 'UpdateSecret', 'DeleteSecret', 'RestoreSecret',
+    'RotateSecret', 'UpdateSecretVersionStage', 'PutResourcePolicy', 'DeleteResourcePolicy', 'ReplicateSecretToRegions']) {
+    expect(denies[0]!.Action, action).toContain('secretsmanager:' + action)
+  }
+  // Checking that the secret exists stays possible and is never denied.
+  expect(denies[0]!.Action).not.toContain('secretsmanager:DescribeSecret')
+  expect(secretStatements(managed).filter(s => s.Effect === 'Allow')).toEqual([
+    { Effect: 'Allow', Action: ['secretsmanager:DescribeSecret'], Resource: [pattern] }])
 })

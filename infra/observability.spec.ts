@@ -436,8 +436,11 @@ describe('foundation_permissions_cover_observability_within_arturia', () => {
   })
 
   test('the operator policy is one managed policy scoped to arturia, under the size limit and without IAM writes', () => {
-    const document = operatorManagedPolicy(target) as unknown as { Statement: Statement[] }
-    expect(JSON.stringify(document).length).toBeLessThan(6_144)
+    const full = operatorManagedPolicy(target) as unknown as { Statement: Statement[] }
+    expect(JSON.stringify(full).length).toBeLessThan(6_144)
+    // Explicit denials are tested apart (ledger and provider secret); the shape below covers what the operator is allowed.
+    expect(full.Statement.some(s => s.Effect === 'Deny')).toBe(true)
+    const document = { Statement: full.Statement.filter(s => s.Effect === 'Allow') }
     const actions = document.Statement.flatMap(s => s.Action)
     for (const action of ['dynamodb:PutItem', 'sqs:StartMessageMoveTask', 'cognito-idp:AdminCreateUser', 's3:DeleteObject',
       'logs:StartQuery', 'cloudwatch:SetAlarmState', 'budgets:ViewBudget']) expect(actions, action).toContain(action)

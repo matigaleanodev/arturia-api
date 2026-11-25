@@ -62,7 +62,8 @@ describe('ledger_table_is_retained_in_the_foundation', () => {
 })
 
 describe('ledger_permissions_are_item_level_and_least_privilege', () => {
-  const on = (statements: readonly Statement[], arn: string) => statements.filter(s => s.Resource.includes(arn)).flatMap(s => [...s.Action])
+  const on = (statements: readonly Statement[], arn: string) => statements.filter(s => s.Effect === 'Allow' && s.Resource.includes(arn)).flatMap(s => [...s.Action])
+  const denied = (statements: readonly Statement[], arn: string) => statements.filter(s => s.Effect === 'Deny' && s.Resource.includes(arn)).flatMap(s => [...s.Action])
 
   test('the worker reads and writes ledger items but never queries, scans or deletes', () => {
     const actions = on(rolePolicies(target).worker, ledgerArn)
@@ -81,6 +82,18 @@ describe('ledger_permissions_are_item_level_and_least_privilege', () => {
     const actions = on(operatorManagedPolicy(target).Statement as Statement[], ledgerArn)
     expect(actions.sort()).toEqual(['dynamodb:ConditionCheckItem', 'dynamodb:DescribeTable', 'dynamodb:GetItem', 'dynamodb:PutItem',
       'dynamodb:Query', 'dynamodb:UpdateItem'])
+  })
+
+  test('the operator is denied deleting items or administering the ledger table, whatever the account-wide Architect policy allows', () => {
+    const managed = operatorManagedPolicy(target).Statement as Statement[]
+    const actions = denied(managed, ledgerArn)
+    for (const action of ['DeleteItem', 'BatchWriteItem', 'DeleteTable', 'UpdateTable', 'UpdateContinuousBackups', 'UpdateTimeToLive',
+      'PutResourcePolicy', 'DeleteResourcePolicy']) expect(actions, action).toContain('dynamodb:' + action)
+    // What settlement needs is never denied, and the chat table is untouched by these denials.
+    for (const action of ['GetItem', 'Query', 'PutItem', 'UpdateItem', 'ConditionCheckItem', 'DescribeTable']) {
+      expect(actions, action).not.toContain('dynamodb:' + action)
+    }
+    expect(denied(managed, chatArn)).toEqual([])
   })
 
   test('the cloudformation role cannot delete or alter the ledger table, and the boundary still caps its name', () => {

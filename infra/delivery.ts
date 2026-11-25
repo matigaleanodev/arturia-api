@@ -72,10 +72,11 @@ export const BOUNDARY_NAME = `${P}boundary`
 
 export interface Target { readonly partition: string; readonly account: string; readonly region: string }
 type Condition = Record<string, Record<string, string | string[]>>
-export interface Statement { Effect: 'Allow'; Action: string[]; Resource: string[]; Condition?: Condition }
+export interface Statement { Effect: 'Allow' | 'Deny'; Action: string[]; Resource: string[]; Condition?: Condition }
 
 export const allow = (Action: string[], Resource: string[], Condition?: Condition): Statement =>
   ({ Effect: 'Allow', Action, Resource, ...(Condition ? { Condition } : {}) })
+export const deny = (Action: string[], Resource: string[]): Statement => ({ Effect: 'Deny', Action, Resource })
 export const policy = (Statement: readonly unknown[]) => ({ Version: '2012-10-17', Statement })
 const trust = (Service: string) =>
   policy([{ Effect: 'Allow', Principal: { Service }, Action: 'sts:AssumeRole' }])
@@ -394,6 +395,25 @@ export function operationsPolicy(t: Target) {
   ])
 }
 
-/** One customer managed policy: deployment plus operations. IAM limits managed policies to 6,144 characters. */
+/**
+ * Explicit denials of the operator. The account-wide Architect policy allows `dynamodb:*` and secret access on any
+ * resource, and an explicit deny wins over any allow. They keep two promises: nobody but the worker reads or writes
+ * the provider key, and the AI ledger cannot be emptied or reconfigured with the daily profile (D3). The operator
+ * keeps `DescribeSecret` and the item-level access that settlement needs. Changing either takes the administrator.
+ */
+export function operatorDenials(t: Target) {
+  const a = arns(t)
+  return policy([
+    deny(['secretsmanager:GetSecretValue', 'secretsmanager:BatchGetSecretValue', 'secretsmanager:PutSecretValue',
+      'secretsmanager:UpdateSecret', 'secretsmanager:DeleteSecret', 'secretsmanager:RestoreSecret', 'secretsmanager:RotateSecret',
+      'secretsmanager:UpdateSecretVersionStage', 'secretsmanager:PutResourcePolicy', 'secretsmanager:DeleteResourcePolicy',
+      'secretsmanager:ReplicateSecretToRegions'], [a.providerSecret]),
+    deny(['dynamodb:DeleteItem', 'dynamodb:BatchWriteItem', 'dynamodb:DeleteTable', 'dynamodb:UpdateTable',
+      'dynamodb:UpdateContinuousBackups', 'dynamodb:UpdateTimeToLive', 'dynamodb:PutResourcePolicy',
+      'dynamodb:DeleteResourcePolicy'], [a.ledger]),
+  ])
+}
+
+/** One customer managed policy: deployment, operations and denials. IAM limits managed policies to 6,144 characters. */
 export const operatorManagedPolicy = (t: Target) =>
-  policy([...operatorPolicy(t).Statement, ...operationsPolicy(t).Statement])
+  policy([...operatorPolicy(t).Statement, ...operationsPolicy(t).Statement, ...operatorDenials(t).Statement])
