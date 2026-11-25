@@ -7,6 +7,7 @@ import { DescribeTableCommand, type DynamoDBClient } from '@aws-sdk/client-dynam
 import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyModelGrants, applyProvision, readProvision } from '../../src/admin/provision.js'
 import { runProvision } from '../../src/admin/cli.js'
+import { permitsAuthentication, type AccountState } from '../../src/identity/actor.js'
 import { createGenerationWorker } from '../../src/chat/generate.worker.js'
 import { createChat } from '../../src/chat/turns.js'
 import { ChatStore, scopePartition, turnKey } from '../../src/chat/turns.store.js'
@@ -184,6 +185,25 @@ describe('provision CLI', () => {
     const check = await cli(['--sub', sub, '--check', ...full])
     expect(check.code).toBe(0)
     expect(JSON.parse(check.out)).toMatchObject({ mode: 'check', status: 'complete', modelGrants: 'absent' })
+  })
+
+  test('before_first_login_provisions_so_the_first_sign_in_lands_without_waiting', async () => {
+    const sub = randomUUID()
+    const full = target()
+    const both = await cli(['--sub', sub, '--apply', '--confirm-totp-enrolled', '--before-first-login', ...full])
+    expect(both.code).toBe(1)
+    expect(await store.findUserIdBySubject(sub)).toBeUndefined()
+
+    const before = now()
+    const applied = await cli(['--sub', sub, '--apply', '--before-first-login', ...full])
+    const after = now()
+    expect(applied.code).toBe(0)
+    const userId = await store.findUserIdBySubject(sub)
+    const account = await store.read(JSON.stringify([userId]), 'ACCOUNT')
+    // Margin goes backwards: the sign-in that enrolls TOTP happens right after this and must pass authTime > mfaVerifiedAt.
+    expect(account?.mfaVerifiedAt).toBeGreaterThanOrEqual(before - 60)
+    expect(account?.mfaVerifiedAt).toBeLessThanOrEqual(after - 60)
+    expect(permitsAuthentication(account as AccountState, after)).toBe(true)
   })
 
   test('check_reports_incomplete_state_with_nonzero_exit', async () => {

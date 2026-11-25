@@ -88,7 +88,7 @@ export function runProvision(argv: readonly string[], env: Env, deps: ProvisionD
     try {
       parsed = parseArgs({ args: [...argv], strict: true, allowPositionals: false, options: {
         sub: { type: 'string' }, apply: { type: 'boolean' }, check: { type: 'boolean' },
-        'confirm-totp-enrolled': { type: 'boolean' }, 'model-grants': { type: 'boolean' }, ...targetOptions,
+        'confirm-totp-enrolled': { type: 'boolean' }, 'before-first-login': { type: 'boolean' }, 'model-grants': { type: 'boolean' }, ...targetOptions,
       } })
     } catch { throw new AdminError('Argumentos inválidos') }
     const { values } = parsed
@@ -105,8 +105,10 @@ export function runProvision(argv: readonly string[], env: Env, deps: ProvisionD
       return 0
     }
     const target = readTarget(values)
-    if (values.apply && !values['confirm-totp-enrolled']) {
-      throw new AdminError('--apply requiere --confirm-totp-enrolled después de verificar el enrolamiento TOTP en Cognito')
+    const enrolled = values['confirm-totp-enrolled'], beforeFirstLogin = values['before-first-login']
+    if (values.apply && enrolled && beforeFirstLogin) throw new AdminError('Usá --confirm-totp-enrolled o --before-first-login, no ambos')
+    if (values.apply && !enrolled && !beforeFirstLogin) {
+      throw new AdminError('--apply requiere --confirm-totp-enrolled (TOTP ya enrolado) o --before-first-login (la persona aún no inició sesión)')
     }
     const client = deps.createClient(target)
     try {
@@ -118,7 +120,9 @@ export function runProvision(argv: readonly string[], env: Env, deps: ProvisionD
         return report.status === 'complete' ? 0 : 2
       }
       const result = await applyProvision(db, target.tableName, values.sub,
-        { mfaVerifiedAt: deps.now() + MFA_CLOCK_MARGIN_SECONDS })
+        // Pool MFA is REQUIRED: no token exists before TOTP is enrolled, so a person who has not signed in yet can be
+        // provisioned first; the margin goes backwards so the sign-in that enrolls TOTP is accepted at once.
+        { mfaVerifiedAt: deps.now() + (beforeFirstLogin ? -MFA_CLOCK_MARGIN_SECONDS : MFA_CLOCK_MARGIN_SECONDS) })
       // The grant is a separate, explicit step: it is never implied by a provision.
       const grant = values['model-grants'] ? await applyModelGrants(db, target.tableName, values.sub) : undefined
       const modelGrants = grant ? 'present' : result.modelGrants
