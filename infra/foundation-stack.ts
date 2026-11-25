@@ -2,17 +2,18 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { Aws, BootstraplessSynthesizer, CfnOutput, Fn, RemovalPolicy, Stack, Tags } from 'aws-cdk-lib'
+import { CfnTable } from 'aws-cdk-lib/aws-dynamodb'
 import { CfnManagedPolicy, CfnRole } from 'aws-cdk-lib/aws-iam'
 import { CfnBucket, CfnBucketPolicy } from 'aws-cdk-lib/aws-s3'
 import type { Construct } from 'constructs'
-import { addBudget } from './cost-controls.ts'
+import { TABLE_LIMITS, addBudget } from './cost-controls.ts'
 import {
-  ARTIFACT_BUCKET, BOUNDARY_NAME, HOSTING_POLICY_NAME, OPERATOR_POLICY_NAME, ROLE_NAMES, STACKS, cloudformationPolicies,
+  ARTIFACT_BUCKET, BOUNDARY_NAME, HOSTING_POLICY_NAME, NAMES, OPERATOR_POLICY_NAME, ROLE_NAMES, STACKS, cloudformationPolicies,
   operatorManagedPolicy, policy, rolePolicies, roleTrust, type Target,
 } from './delivery.ts'
 
 /**
- * Privileged foundation: the artifact bucket, the pilot's predefined roles, the hosting managed policy
+ * Privileged foundation: the artifact bucket, the retained AI consumption ledger table, the pilot's predefined roles, the hosting managed policy
  * of the CloudFormation role, the operator's managed policy and the project's monthly budget. It has no
  * assets and needs no CDK bootstrap. An administrator deploys it after creating the external boundary,
  * which this stack references but cannot edit. The budget lives here so that destroying the pilot keeps
@@ -52,6 +53,20 @@ export class FoundationStack extends Stack {
         Condition: { Bool: { 'aws:SecureTransport': 'false' } },
       }]),
     })
+
+    // Holds only monthly consumption counters, attempts and settlement audits (amounts and opaque IDs, no content).
+    // Retained and under point-in-time recovery so that destroying or recreating the pilot cannot reset the budget.
+    const ledger = new CfnTable(this, 'Ledger', {
+      tableName: NAMES.ledgerTable,
+      billingMode: 'PAY_PER_REQUEST',
+      onDemandThroughput: { maxReadRequestUnits: TABLE_LIMITS.maxReadRequestUnits, maxWriteRequestUnits: TABLE_LIMITS.maxWriteRequestUnits },
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }, { attributeName: 'sk', attributeType: 'S' }],
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }, { attributeName: 'sk', keyType: 'RANGE' }],
+      deletionProtectionEnabled: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    })
+    ledger.applyRemovalPolicy(RemovalPolicy.RETAIN)
+    new CfnOutput(this, 'LedgerTable', { value: ledger.ref })
 
     const boundary = Fn.sub(`arn:\${AWS::Partition}:iam::\${AWS::AccountId}:policy/${BOUNDARY_NAME}`)
     const policies = rolePolicies(deployed)

@@ -102,8 +102,8 @@ test('foundation_has_no_assets_and_retains_bucket', () => {
   for (const role of roles) {
     expect(role.Properties.PermissionsBoundary).toEqual({ 'Fn::Sub': 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/arturia-pilot-boundary' })
   }
-  // Bucket, bucket policy, operator and cloudformation hosting managed policies, and budget (13.8, post-A0).
-  expect(Object.keys(template.toJSON().Resources).length).toBe(ROLE_NAMES.length + 5)
+  // Bucket, bucket policy, operator and cloudformation hosting managed policies, budget (13.8, post-A0) and the ledger table (13.11).
+  expect(Object.keys(template.toJSON().Resources).length).toBe(ROLE_NAMES.length + 6)
 })
 
 test('pilot_real_synth_requires_account_region_and_web_dir', () => {

@@ -367,10 +367,10 @@ describe('removal_policies_match_decision', () => {
     for (const [, queue] of ofType(json, 'AWS::SQS::Queue')) expect(queue.Properties!.MessageRetentionPeriod).toBe(14 * 86_400)
   }, 20_000)
 
-  test('the foundation retains only the artifact bucket and owns the budget and the operator policy', () => {
+  test('the foundation retains only the artifact bucket and the AI ledger table, and owns the budget and the operator policy', () => {
     const { json } = synthFoundation()
     const retained = Object.entries(json.Resources).filter(([, resource]) => resource.DeletionPolicy === 'Retain').map(([, r]) => r.Type)
-    expect(retained).toEqual(['AWS::S3::Bucket'])
+    expect(retained).toEqual(['AWS::S3::Bucket', 'AWS::DynamoDB::Table'])
   })
 })
 

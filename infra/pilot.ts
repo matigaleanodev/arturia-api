@@ -145,7 +145,7 @@ export function createPilotStack(app: App, target: PilotTarget) {
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
   const worker = addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction,
-    providerMode: target.providerMode ?? 'fixture', paused: target.workerPaused === true })
+    providerMode: target.providerMode ?? 'fixture', ledgerTableName: NAMES.ledgerTable, paused: target.workerPaused === true })
   const { api, http, stream } = addChatApi(stack, {
     restApiName: NAMES.restApi,
     table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: webOrigin,

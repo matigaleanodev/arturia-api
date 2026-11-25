@@ -118,7 +118,7 @@ test('pilot_resources_match_the_inventory', () => {
   expect(inventory(synthPilot({ ...synthetic, apiAccessLogs: true }).Resources))
     .toEqual({ ...PILOT_INVENTORY, 'AWS::Logs::LogGroup': PILOT_INVENTORY['AWS::Logs::LogGroup']! + 1 })
   expect(inventory(synthFoundation().Resources)).toEqual({ 'AWS::S3::Bucket': 1, 'AWS::S3::BucketPolicy': 1, 'AWS::IAM::Role': 6,
-    'AWS::IAM::ManagedPolicy': 2, 'AWS::Budgets::Budget': 1 })
+    'AWS::IAM::ManagedPolicy': 2, 'AWS::Budgets::Budget': 1, 'AWS::DynamoDB::Table': 1 })
 }, 30_000)
 
 describe('iam_minimum_per_function', () => {
@@ -179,7 +179,7 @@ describe('iam_minimum_per_function', () => {
     const own: Record<string, RegExp> = {
       stream: /(table\/arturia-pilot-chat|\/aws\/lambda\/arturia-pilot-stream:\*)$/,
       http: /(table\/arturia-pilot-chat|\/aws\/lambda\/arturia-pilot-http:\*)$/,
-      worker: /(table\/arturia-pilot-chat|arturia-pilot-turns\.fifo|\/aws\/lambda\/arturia-pilot-worker:\*)$/,
+      worker: /(table\/arturia-pilot-chat|table\/arturia-pilot-ledger|arturia-pilot-turns\.fifo|\/aws\/lambda\/arturia-pilot-worker:\*)$/,
       relay: /(table\/arturia-pilot-chat|table\/arturia-pilot-chat\/stream\/\*|arturia-pilot-turns\.fifo|arturia-pilot-relay-dlq|\/aws\/lambda\/arturia-pilot-relay:\*|^\*)$/,
     }
     for (const [role, pattern] of Object.entries(own)) {

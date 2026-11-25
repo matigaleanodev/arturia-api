@@ -13,7 +13,7 @@ function compose(timing: Timing) {
   const stack = new Stack(new App(), 'Fixture')
   const relay = new lambda.Function(stack, 'FixtureRelay', { runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code })
   const { table, turnQueue } = addOutbox(stack, relay, undefined, timing)
-  addWorker(stack, { table, queue: turnQueue, code, timing })
+  addWorker(stack, { table, queue: turnQueue, code, timing, ledgerTableName: 'arturia-pilot-ledger' })
   return Template.fromStack(stack)
 }
 

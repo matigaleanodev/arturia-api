@@ -38,6 +38,8 @@ export const NAMES = {
   relayFunction: `${P}relay`,
   workerFunction: `${P}worker`,
   table: `${P}chat`,
+  /** AI consumption ledger: retained table of the foundation, so recreating the pilot cannot reset the monthly budget. */
+  ledgerTable: `${P}ledger`,
   turnQueue: `${P}turns.fifo`,
   turnDeadLetters: `${P}turns-dlq.fifo`,
   relayDeadLetters: `${P}relay-dlq`,
@@ -86,11 +88,12 @@ export const webBucketName = (t: Target) => resolveBucket(WEB_BUCKET, t)
 function arns(t: Target) {
   const regional = (service: string, resource: string) => `arn:${t.partition}:${service}:${t.region}:${t.account}:${resource}`
   const table = regional('dynamodb', `table/${NAMES.table}`)
+  const ledger = regional('dynamodb', `table/${NAMES.ledgerTable}`)
   const fn = (name: string) => regional('lambda', `function:${name}`)
   const logs = (name: string) => regional('logs', `log-group:/aws/lambda/${name}:*`)
   const topic = regional('sns', NAMES.alertsTopic)
   return {
-    table, tableStream: `${table}/stream/*`, fn, logs,
+    table, ledger, tableStream: `${table}/stream/*`, fn, logs,
     // Function log groups and the access log group, with and without the log stream suffix.
     logGroups: [`log-group:/aws/lambda/${P}*`, `log-group:${P}*`].map(group => regional('logs', group)),
     alarms: regional('cloudwatch', `alarm:${P}*`),
@@ -139,7 +142,7 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
     ],
     worker: [
       allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.workerFunction)]),
-      allow([...WORKER_TABLE_ACTIONS], [a.table]),
+      allow([...WORKER_TABLE_ACTIONS], [a.table, a.ledger]),
       // The SQS event source polls with the function role.
       allow(['sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueUrl', 'sqs:DeleteMessage',
         'sqs:GetQueueAttributes'], [a.queue(NAMES.turnQueue)]),
@@ -362,6 +365,9 @@ export function operationsPolicy(t: Target) {
   return policy([
     allow(['dynamodb:DescribeTable', 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:PutItem', 'dynamodb:UpdateItem',
       'dynamodb:ConditionCheckItem'], [a.table]),
+    // Reconciliation of uncertain reservations: items and Query on the ledger partition; never Scan or Delete.
+    allow(['dynamodb:DescribeTable', 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:PutItem', 'dynamodb:UpdateItem',
+      'dynamodb:ConditionCheckItem'], [a.ledger]),
     allow(['sqs:SendMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl'], [turns]),
     allow(['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:GetQueueUrl', 'sqs:StartMessageMoveTask',
       'sqs:ListMessageMoveTasks', 'sqs:CancelMessageMoveTask'], [turnsDlq]),
