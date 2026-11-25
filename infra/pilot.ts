@@ -14,7 +14,7 @@ import { addAccessLogs, addAlarms, addAlertsTopic, addFunctionLogs } from './obs
 import { addOutbox } from './outbox.ts'
 import { addWebHosting, checkWebDist } from './web-hosting.ts'
 import { addWorker } from './worker.ts'
-import { CATALOG_MODELS, isFreshDay, isProviderSecretArn } from '../src/config/catalog-config.ts'
+import { ENABLED_CATALOG_MODELS, isFreshDay, isProviderSecretArn } from '../src/config/catalog-config.ts'
 import type { CatalogRuntime, ProviderMode } from '../src/config/runtime.ts'
 import { TIMING } from '../src/config/timing.ts'
 
@@ -127,7 +127,7 @@ function catalogContext(read: (key: string) => string | undefined, account: stri
   const model = read('arturia:model') ?? ''
   const tariffVerifiedAt = read('arturia:tariffVerifiedAt') ?? ''
   if (!isProviderSecretArn(secretArn) || secretArn.split(':').slice(3, 5).join(':') !== `${region}:${account}` ||
-      !CATALOG_MODELS.includes(model) || !isFreshDay(tariffVerifiedAt, new Date())) {
+      !ENABLED_CATALOG_MODELS.includes(model) || !isFreshDay(tariffVerifiedAt, new Date())) {
     // The message names the context keys only, never the rejected values.
     throw new Error('Invalid arturia:providerMode: catalog requires -c arturia:providerSecretArn, arturia:model and arturia:tariffVerifiedAt')
   }

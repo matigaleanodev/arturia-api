@@ -114,6 +114,9 @@ test('runtime_catalog_config_requires_secret_arn', () => {
     expect((error as ConfigError).variables).toEqual(variables)
     expect((error as Error).message).not.toContain('gpt-4')
   }
+  // A model of a disabled provider is a configuration error, as is any model outside the catalog.
+  const disabled = failure(() => loadCatalogRuntime({ ...catalogEnv, ARTURIA_MODEL: 'claude-sonnet-5-5' }, new Date('2026-11-25T00:00:00Z')))
+  expect((disabled as ConfigError).variables).toEqual(['ARTURIA_MODEL'])
   const missing = failure(() => loadCatalogRuntime(worker))
   expect((missing as ConfigError).variables).toEqual(['ARTURIA_PROVIDER_SECRET_ARN', 'ARTURIA_MODEL', 'ARTURIA_TARIFF_VERIFIED_AT'])
 })

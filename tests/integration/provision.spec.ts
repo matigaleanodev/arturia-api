@@ -5,13 +5,14 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, inject, test } from 'vitest'
 import { DescribeTableCommand, type DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
-import { PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyProvision, readProvision } from '../../src/admin/provision.js'
+import { PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyModelGrants, applyProvision, readProvision } from '../../src/admin/provision.js'
 import { runProvision } from '../../src/admin/cli.js'
 import { createGenerationWorker } from '../../src/chat/generate.worker.js'
 import { createChat } from '../../src/chat/turns.js'
 import { ChatStore, scopePartition, turnKey } from '../../src/chat/turns.store.js'
 import { createLambdaAdapter, type RestEvent } from '../../src/http/lambda-adapter.js'
 import { publishOutbox } from '../../src/jobs/outbox.js'
+import { directUserMessage, safeModelText, type ModelGrant } from '../../src/models/egress.js'
 import { SimulatedProvider } from '../../src/models/simulated.js'
 import { createLog } from '../../src/observability/log.js'
 import { integrationDatabase, localDynamoClient } from '../support/dynamodb.js'
@@ -121,9 +122,10 @@ describe('provision core', () => {
     const granted = await applyProvision(store.db, store.tableName, sub, { mfaVerifiedAt: 1 })
     await put({ pk: scopePartition(granted.userId!, 'work'), sk: 'MODEL#openai', enabled: true })
     expect(await readProvision(store.db, store.tableName, sub)).toMatchObject({ status: 'complete', modelGrants: 'present' })
+    // Grants are written only on request, together with --apply.
     const reported = await cli(['--sub', randomUUID(), '--model-grants'])
     expect(reported.code).toBe(1)
-    expect(reported.out).toMatch(/13\.14/)
+    expect(reported.out).toMatch(/--apply/)
     expect(reported.created).toHaveLength(0)
   })
 
@@ -267,5 +269,51 @@ describe('provisioned users through the deployable handlers', () => {
     // A scope that was never provisioned is denied, not created implicitly.
     const unknown = await handle(event('GET', '/conversations', { scopeId: 'shared' }, a.claims))
     expect(unknown.statusCode).toBe(403)
+  })
+})
+
+describe('model grants (13.14)', () => {
+  const personal = (userId: string) => scopePartition(userId, 'personal')
+
+  test('model_grant_is_least_privilege_personal_only_and_idempotent', async () => {
+    const sub = randomUUID()
+    const { userId } = await applyProvision(store.db, store.tableName, sub, { mfaVerifiedAt: 1 })
+    expect(await applyModelGrants(store.db, store.tableName, sub)).toEqual({ written: true })
+    const [grant, ...others] = await rows(personal(userId!), 'MODEL')
+    expect(others).toEqual([])
+    expect(grant).toMatchObject({ sk: 'MODEL#openai', enabled: true, origins: ['direct'], categories: ['chat'], integrations: ['manual'] })
+    // No Anthropic grant, no source access rows and no authority in the work scope.
+    expect(await rows(scopePartition(userId!, 'work'), 'MODEL')).toEqual([])
+    expect(await rows(personal(userId!), 'MODEL-SOURCES')).toEqual([])
+    expect(await applyModelGrants(store.db, store.tableName, sub)).toEqual({ written: false })
+    expect(await readProvision(store.db, store.tableName, sub)).toMatchObject({ status: 'complete', modelGrants: 'present' })
+    // The written grant admits exactly the direct user message and nothing else.
+    expect(safeModelText({ message: { text: 'Hola', modelSources: [directUserMessage] }, grant: grant as ModelGrant })).toBe('Hola')
+    expect(() => safeModelText({ message: { text: 'Hola', modelSources: [{ ...directUserMessage, origin: 'repo' }] }, grant: grant as ModelGrant })).toThrow()
+  })
+
+  test('model_grant_conflict_is_never_overwritten', async () => {
+    const sub = randomUUID()
+    const { userId } = await applyProvision(store.db, store.tableName, sub, { mfaVerifiedAt: 1 })
+    await put({ pk: personal(userId!), sk: 'MODEL#openai', enabled: false, origins: ['direct'], categories: ['chat'], integrations: ['manual'] })
+    await expect(applyModelGrants(store.db, store.tableName, sub)).rejects.toThrow(/conflicto/)
+    expect((await rows(personal(userId!), 'MODEL'))[0]).toMatchObject({ enabled: false })
+  })
+
+  test('model_grant_requires_a_complete_provision', async () => {
+    await expect(applyModelGrants(store.db, store.tableName, randomUUID())).rejects.toThrow(/aprovisionamiento/)
+  })
+
+  test('cli_model_grants_writes_only_with_apply_and_reports_the_grant', async () => {
+    const sub = randomUUID()
+    const dry = await cli(['--sub', sub, '--model-grants'])
+    expect(dry.code).toBe(1)
+    const applied = await cli(['--sub', sub, '--apply', '--confirm-totp-enrolled', '--model-grants', ...target()])
+    expect(applied.code).toBe(0)
+    expect(JSON.parse(applied.out)).toMatchObject({ mode: 'apply', status: 'complete', modelGrants: 'present', modelGrantsWritten: true })
+    const userId = await store.findUserIdBySubject(sub)
+    expect((await rows(personal(userId!), 'MODEL')).map(row => row.sk)).toEqual(['MODEL#openai'])
+    const again = await cli(['--sub', sub, '--apply', '--confirm-totp-enrolled', '--model-grants', ...target()])
+    expect(JSON.parse(again.out)).toMatchObject({ modelGrantsWritten: false })
   })
 })

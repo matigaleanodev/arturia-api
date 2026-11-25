@@ -4,12 +4,12 @@
 // Administrative provisioning of the pilot user: the Cognito subject mapping, an active account with
 // the verified TOTP time and the personal and work scopes. Writes are all-or-nothing and only create
 // missing rows. Existing rows are never changed: a disabled account, narrowed scope actions or a
-// different subject mapping are conflicts that the operator resolves by hand. Model grants are never
-// written here.
+// different subject mapping are conflicts that the operator resolves by hand. Model grants are written
+// only by `applyModelGrants`, on explicit request.
 
 import { randomUUID } from 'node:crypto'
-import { DescribeTableCommand, TransactionCanceledException, type DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { GetCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient,
+import { ConditionalCheckFailedException, DescribeTableCommand, TransactionCanceledException, type DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient,
   type TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb'
 import { scopePartition } from '../chat/turns.store.js'
 import type { Action } from '../identity/policy.js'
@@ -21,6 +21,14 @@ export const PILOT_SCOPE_ACTIONS: readonly Action[] = ['conversation:list', 'con
 
 /** Cognito `sub`: a lowercase UUID. Rejects fixture subjects and arbitrary strings. */
 const SUBJECT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * The single model grant of the first real sample: OpenAI, the direct user message only, in the personal scope.
+ * No source access row is written (a direct message needs none), no other provider and no other scope.
+ */
+export const MODEL_GRANT_SCOPE: PilotScopeId = 'personal'
+export const MODEL_GRANT_SORT_KEY = 'MODEL#openai'
+export const MODEL_GRANT = Object.freeze({ enabled: true, origins: ['direct'], categories: ['chat'], integrations: ['manual'] })
 
 export class AdminError extends Error { override name = 'AdminError' }
 
@@ -131,6 +139,36 @@ export async function applyProvision(db: DynamoDBDocumentClient, tableName: stri
     return { ...final, written: missing }
   }
   throw new AdminError('Escrituras concurrentes: volvé a ejecutar el aprovisionamiento')
+}
+
+const sameGrant = (item: Record<string, unknown>) => item.enabled === MODEL_GRANT.enabled &&
+  (['origins', 'categories', 'integrations'] as const).every(field =>
+    Array.isArray(item[field]) && (item[field] as unknown[]).length === MODEL_GRANT[field].length &&
+    MODEL_GRANT[field].every((value, index) => (item[field] as unknown[])[index] === value)) &&
+  Object.keys(item).every(key => ['pk', 'sk', 'enabled', 'origins', 'categories', 'integrations'].includes(key))
+
+/**
+ * Writes the OpenAI model grant of the personal scope after a complete provision. Creates it only if absent: an
+ * identical row is a no-op and a different one is a conflict that the operator resolves by hand.
+ */
+export async function applyModelGrants(db: DynamoDBDocumentClient, tableName: string, subject: string): Promise<{ written: boolean }> {
+  const report = await readProvision(db, tableName, subject)
+  if (report.status !== 'complete' || !report.userId) throw new AdminError('El aprovisionamiento del usuario no está completo: no se escribió el grant')
+  const pk = scopePartition(report.userId, MODEL_GRANT_SCOPE)
+  const existing = await get(db, tableName, pk, MODEL_GRANT_SORT_KEY)
+  if (existing) {
+    if (!sameGrant(existing)) throw new AdminError('Grant de modelo en conflicto, no se escribió nada')
+    return { written: false }
+  }
+  try {
+    await db.send(new PutCommand({ TableName: tableName, ConditionExpression: 'attribute_not_exists(pk)',
+      Item: { pk, sk: MODEL_GRANT_SORT_KEY, ...MODEL_GRANT, origins: [...MODEL_GRANT.origins], categories: [...MODEL_GRANT.categories],
+        integrations: [...MODEL_GRANT.integrations] } }))
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return applyModelGrants(db, tableName, subject)
+    throw error
+  }
+  return { written: true }
 }
 
 export interface AwsTarget { readonly tableName: string; readonly region: string; readonly account: string }

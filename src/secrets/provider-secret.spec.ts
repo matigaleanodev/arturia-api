@@ -5,8 +5,11 @@ import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager'
 import { expect, test, vi } from 'vitest'
 import { ConfigError } from '../config/runtime.js'
 import {
-  CredentialUnavailable, PROVIDER_SECRET_NAME, createProviderCredentials, isProviderSecretArn,
+  CredentialUnavailable, PROVIDER_SECRET_NAME, createProviderCredentials as create, isProviderSecretArn,
 } from './provider-secret.js'
+
+// The runtime default enables OpenAI only. These tests keep covering the Anthropic key path with both enabled.
+const createProviderCredentials = (options: Parameters<typeof create>[0]) => create({ providers: ['openai', 'anthropic'], ...options })
 
 const arn = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${PROVIDER_SECRET_NAME}-AbCdEf`
 // Synthetic values: they only have the shape of a key and are never valid anywhere.
@@ -159,4 +162,17 @@ test('secret_never_logged: no failure or success path writes a key to the consol
   const output = [...sinks, ...writes].flatMap(spy => spy.mock.calls.flat().map(String)).concat(messages).join('\n')
   for (const key of secrets) expect(output).not.toContain(key)
   vi.restoreAllMocks()
+})
+
+test('a disabled provider has no key: Anthropic is refused without reading the secret', async () => {
+  const sm = client(secret(JSON.stringify({ openai: openaiKey })))
+  const credentials = create({ secretArn: arn, client: sm })
+  await expect(credentials.get('anthropic')).rejects.toBeInstanceOf(CredentialUnavailable)
+  expect(sm.send).not.toHaveBeenCalled()
+  await expect(credentials.get('openai')).resolves.toBe(openaiKey)
+})
+
+test('a secret that holds a key of a disabled provider is refused: the runtime never accepts an Anthropic credential', async () => {
+  const credentials = create({ secretArn: arn, client: client(secret(good)) })
+  await expect(credentials.get('openai')).rejects.toBeInstanceOf(CredentialUnavailable)
 })

@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { createAnthropicAdapter } from '../../src/models/anthropic.js'
 import { createOpenAIAdapter } from '../../src/models/openai.js'
 import { ModelPolicyDenied, UncertainSend } from '../../src/models/provider.js'
-import { PROVIDER_ORIGINS, createFetchWire } from '../../src/models/wire.fetch.js'
+import { PROVIDER_ORIGINS, createFetchWire as create } from '../../src/models/wire.fetch.js'
 import { CredentialUnavailable } from '../../src/secrets/provider-secret.js'
 import { sendEvents, startProviderServer } from '../support/provider-server.js'
 
@@ -35,6 +35,8 @@ async function provider(handler: Parameters<typeof startProviderServer>[0]) {
   servers.push(server)
   return server
 }
+// The runtime default enables OpenAI only. These tests keep covering the Anthropic transport with both enabled.
+const createFetchWire = (options: Parameters<typeof create>[0]) => create({ providers: ['openai', 'anthropic'], ...options })
 const adapters = (origin: string, extra: Partial<Parameters<typeof createFetchWire>[0]> = {}, timeoutMs = 2_000) => {
   const creds = credentials()
   const wire = createFetchWire({ credentials: creds, origins: { openai: origin, anthropic: origin }, ...extra })
@@ -258,4 +260,17 @@ test('the response hook receives only the provider, the status and a sanitized r
     { provider: 'anthropic', status: 200 },
   ])
   expect(JSON.stringify(seen)).not.toContain(keys.anthropic)
+})
+
+test('wire_refuses_a_disabled_provider_before_reading_a_key_or_sending', async () => {
+  const send = vi.fn<typeof fetch>()
+  const creds = credentials()
+  const wire = create({ credentials: creds, fetch: send })
+  const anthropic = createAnthropicAdapter(wire, 2_000)
+  // Not sent: the attempt settles at zero, exactly like a missing credential.
+  expect(await collect(anthropic.stream(request('anthropic')))).toEqual([
+    { type: 'usage', failed: true, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, toolTokens: 0, toolCalls: 0 } },
+  ])
+  expect(creds.get).not.toHaveBeenCalled()
+  expect(send).not.toHaveBeenCalled()
 })

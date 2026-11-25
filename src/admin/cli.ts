@@ -17,7 +17,7 @@ import { MIN_UNCERTAIN_AGE_SECONDS, MONTH, applySettlement, listUncertainReserva
   from '../models/settlement-admin.js'
 import { inspectTurn, staleTurns } from './inspect.js'
 import { pendingOutboxFor, republishOutbox } from './outbox-recovery.js'
-import { AdminError, PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyProvision, assertSubject, confirmTable, readProvision,
+import { AdminError, PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyModelGrants, applyProvision, assertSubject, confirmTable, readProvision,
   type AwsTarget } from './provision.js'
 
 export interface OperatorTarget extends AwsTarget { readonly profile: string }
@@ -92,7 +92,7 @@ export function runProvision(argv: readonly string[], env: Env, deps: ProvisionD
       } })
     } catch { throw new AdminError('Argumentos inválidos') }
     const { values } = parsed
-    if (values['model-grants']) throw new AdminError('--model-grants está reservado para la subtarea 13.14 y no está disponible')
+    if (values['model-grants'] && !values.apply) throw new AdminError('--model-grants solo se escribe junto con --apply')
     if (!values.sub) throw new AdminError('Falta --sub')
     assertSubject(values.sub)
     if (values.apply && values.check) throw new AdminError('Usá --apply o --check, no ambos')
@@ -119,8 +119,11 @@ export function runProvision(argv: readonly string[], env: Env, deps: ProvisionD
       }
       const result = await applyProvision(db, target.tableName, values.sub,
         { mfaVerifiedAt: deps.now() + MFA_CLOCK_MARGIN_SECONDS })
+      // The grant is a separate, explicit step: it is never implied by a provision.
+      const grant = values['model-grants'] ? await applyModelGrants(db, target.tableName, values.sub) : undefined
+      const modelGrants = grant ? 'present' : result.modelGrants
       deps.out(JSON.stringify({ mode: 'apply', subject, status: result.status, userId: result.userId,
-        written: result.written, modelGrants: result.modelGrants }))
+        written: result.written, modelGrants, ...(grant && { modelGrantsWritten: grant.written }) }))
       return 0
     } finally {
       client.destroy()

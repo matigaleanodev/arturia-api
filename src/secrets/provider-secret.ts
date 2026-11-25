@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { GetSecretValueCommand, type GetSecretValueCommandOutput } from '@aws-sdk/client-secrets-manager'
-import { PROVIDER_SECRET_NAME, PROVIDER_SECRET_VARIABLE, isProviderSecretArn } from '../config/catalog-config.js'
+import { ENABLED_PROVIDERS, PROVIDER_SECRET_NAME, PROVIDER_SECRET_VARIABLE, isProviderSecretArn } from '../config/catalog-config.js'
 import { ConfigError } from '../config/runtime.js'
 
 export { PROVIDER_SECRET_NAME, PROVIDER_SECRET_VARIABLE, isProviderSecretArn }
@@ -35,11 +35,13 @@ interface Options {
   readonly client: { send(command: GetSecretValueCommand, options?: { abortSignal?: AbortSignal }): Promise<Pick<GetSecretValueCommandOutput, 'SecretString'>> }
   readonly now?: () => number
   readonly ttlMs?: number
+  /** Providers whose key the secret may hold. Defaults to the enabled providers: a key of any other is refused. */
+  readonly providers?: readonly CredentialProvider[]
 }
 
 type Keys = Partial<Record<CredentialProvider, string>>
 
-function parse(secret: unknown): Keys {
+function parse(secret: unknown, providers: readonly string[]): Keys {
   const text = (secret as { SecretString?: unknown } | undefined)?.SecretString
   if (typeof text !== 'string') throw new CredentialUnavailable()
   let value: unknown
@@ -49,7 +51,7 @@ function parse(secret: unknown): Keys {
   if (!entries.length) throw new CredentialUnavailable()
   const keys: Keys = {}
   for (const [name, key] of entries) {
-    if (!(CREDENTIAL_PROVIDERS as readonly string[]).includes(name) || typeof key !== 'string' || !keyPattern.test(key)) {
+    if (!providers.includes(name) || typeof key !== 'string' || !keyPattern.test(key)) {
       throw new CredentialUnavailable()
     }
     keys[name as CredentialProvider] = key
@@ -71,7 +73,7 @@ function until<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
  * Reads the provider keys from a single Secrets Manager secret, by its exact ARN. The keys live only in this
  * closure: a short TTL cache, never logged, never part of an error. Every failure is the same constant error.
  */
-export function createProviderCredentials({ secretArn, client, now = Date.now, ttlMs = DEFAULT_CREDENTIAL_TTL_MS }: Options): ProviderCredentials {
+export function createProviderCredentials({ secretArn, client, now = Date.now, ttlMs = DEFAULT_CREDENTIAL_TTL_MS, providers = ENABLED_PROVIDERS as readonly CredentialProvider[] }: Options): ProviderCredentials {
   if (!isProviderSecretArn(secretArn)) throw new ConfigError([PROVIDER_SECRET_VARIABLE])
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_CREDENTIAL_TTL_MS) throw new RangeError('Invalid credential TTL')
   let cached: { keys: Keys; expiresAt: number } | undefined
@@ -81,7 +83,7 @@ export function createProviderCredentials({ secretArn, client, now = Date.now, t
     if (cached && now() < cached.expiresAt) return Promise.resolve(cached.keys)
     loading ??= (async () => {
       try {
-        const keys = parse(await client.send(new GetSecretValueCommand({ SecretId: secretArn }), { abortSignal: signal }))
+        const keys = parse(await client.send(new GetSecretValueCommand({ SecretId: secretArn }), { abortSignal: signal }), providers)
         cached = { keys, expiresAt: now() + ttlMs }
         return keys
       } catch { throw new CredentialUnavailable() } finally { loading = undefined }
@@ -91,7 +93,7 @@ export function createProviderCredentials({ secretArn, client, now = Date.now, t
 
   return {
     async get(provider, signal) {
-      if (!(CREDENTIAL_PROVIDERS as readonly string[]).includes(provider)) throw new CredentialUnavailable()
+      if (!providers.includes(provider)) throw new CredentialUnavailable()
       const key = (await until(load(signal), signal))[provider]
       if (!key) throw new CredentialUnavailable()
       return key

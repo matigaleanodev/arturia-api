@@ -54,7 +54,7 @@ test('store_disabled_in_requests', async () => {
   expect(request.path).toBe('/v1/responses')
   expect(JSON.parse(request.body)).toEqual({
     model: input.model, input: input.text, stream: true, store: false, max_output_tokens: 64,
-    service_tier: 'default', prompt_cache_options: { mode: 'explicit' },
+    reasoning: { effort: 'low' }, service_tier: 'default', prompt_cache_options: { mode: 'explicit' },
   })
   expect(wire).toHaveBeenCalledTimes(1)
 })
@@ -158,4 +158,13 @@ test('OpenAI rejects unquoted cache writes and ambiguous HTTP errors without ret
   await expect(collect(adapter.stream(input))).rejects.toThrow(new UncertainSend('Model charge unconfirmed'))
   await expect(collect(adapter.stream(input))).rejects.toThrow(new UncertainSend('Model charge unconfirmed'))
   expect(wire).toHaveBeenCalledTimes(2)
+})
+
+test('openai_request_pins_low_reasoning_and_the_standard_tier', async () => {
+  const wire = vi.fn<ModelWire>(async () => reply(fixture('openai')))
+  await collect(createOpenAIAdapter(wire).stream(input))
+  const sent = JSON.parse(String(wire.mock.calls[0]![0].body))
+  expect(sent).toMatchObject({ model: 'gpt-6-luna', stream: true, store: false, max_output_tokens: 64,
+    reasoning: { effort: 'low' }, service_tier: 'default' })
+  expect(Object.keys(sent).sort()).toEqual(['input', 'max_output_tokens', 'model', 'prompt_cache_options', 'reasoning', 'service_tier', 'store', 'stream'])
 })

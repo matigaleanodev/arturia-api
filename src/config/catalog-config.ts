@@ -17,6 +17,15 @@ export const isProviderSecretArn = (value: unknown): value is string => typeof v
 /** Models the catalog can serve. A test keeps this list equal to the catalog itself. */
 export const CATALOG_MODELS: readonly string[] = Object.freeze(['gpt-6-luna', 'claude-sonnet-5-5'])
 
+/**
+ * Providers the runtime may use. A provider outside this list is implemented and tested but disabled: it has no
+ * credential, no transport, no spending cap and no selectable model. Enabling one is a code change, never environment.
+ */
+export const ENABLED_PROVIDERS: readonly string[] = Object.freeze(['openai'])
+
+/** Models of the enabled providers. A test keeps it consistent with the catalog and the enabled providers. */
+export const ENABLED_CATALOG_MODELS: readonly string[] = Object.freeze(['gpt-6-luna'])
+
 /** A tariff verification is good for 90 days. After that the deployment fails closed until it is verified again. */
 export const TARIFF_MAX_AGE_DAYS = 90
 

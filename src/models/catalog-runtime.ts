@@ -3,8 +3,11 @@
 
 import { catalogFloor, type ModelSelection } from './catalog.js'
 
-/** Spending cap per provider in microdollars. Together they stay above the monthly cap on purpose: the lower one binds. */
-export const PROVIDER_CAPS: Readonly<Record<string, number>> = Object.freeze({ openai: 6_000_000, anthropic: 6_000_000 })
+/**
+ * Spending cap per enabled provider in microdollars, below the US$ 10 monthly cap. A provider without a cap cannot
+ * reserve anything, so a disabled provider has no budget even if something selected it.
+ */
+export const PROVIDER_CAPS: Readonly<Record<string, number>> = Object.freeze({ openai: 6_000_000 })
 
 const DAY_MS = 86_400_000
 /** A tariff verification is good for 90 days. After that the deployment fails closed until it is verified again. */

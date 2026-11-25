@@ -10,7 +10,8 @@ import { createChat } from '../../src/chat/turns.js'
 import { ChatStore, scopePartition, turnKey } from '../../src/chat/turns.store.js'
 import { ModelBudget, costMicros, type Tariff } from '../../src/models/budget.js'
 import { MAX_INPUT_BYTES, type InputCalibration } from '../../src/models/budget-bound.js'
-import { createCatalogTurnProvider } from '../../src/models/catalog.js'
+import { createCatalogTurnProvider as createEnabled } from '../../src/models/catalog.js'
+import { createCatalogTurnProvider } from '../support/all-providers.js'
 import { createTurnDispatcher, type ModelTransport } from '../../src/models/dispatch.js'
 import type { ModelWire } from '../../src/models/wire.js'
 import { integrationDatabase } from '../support/dynamodb.js'
@@ -234,4 +235,16 @@ test('worker_handler_passes_the_remaining_invocation_time_to_the_turn_runner', a
   const body = JSON.stringify({ userId: 'u', scopeId: 's', turnId: 't' })
   await handler({ Records: [{ messageId: 'm1', body }] }, { getRemainingTimeInMillis: () => 1234 })
   expect(run.mock.calls[0][2]?.()).toBe(1234)
+})
+
+test('disabled_provider_is_never_selected_reserved_or_sent', async () => {
+  budget = new ModelBudget(store, { anthropic: 6 * usd, openai: 6 * usd })
+  const wire = vi.fn<ModelWire>(async () => anthropicReply())
+  const ref = await conversation()
+  const id = randomUUID()
+  // The default of the catalog enables OpenAI only: a selection of Anthropic fails closed, with no fallback.
+  await createGenerationWorker(store, createEnabled(store, budget, () => selection('anthropic'), wire)).runTurn(ref, id)
+  expect(wire).not.toHaveBeenCalled()
+  expect(await budget.getAttempt(id)).toBeUndefined()
+  expect(await store.getTurn(pk(), ref.turnId)).toMatchObject({ status: 'blocked' })
 })

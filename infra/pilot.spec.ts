@@ -423,6 +423,8 @@ describe('catalog_mode_requires_secret_arn', () => {
       { 'arturia:providerSecretArn': arn.replace('us-east-1', 'us-west-2') },
       { 'arturia:providerSecretArn': arn.replace('providers', 'other') },
       { 'arturia:model': 'gpt-4' },
+      // Implemented and tested, but disabled in the runtime: it cannot be deployed.
+      { 'arturia:model': 'claude-sonnet-5-5' },
       { 'arturia:tariffVerifiedAt': '2020-01-01' },
     ]
     for (const override of invalid) expect(() => resolve({ ...catalog, ...override }), JSON.stringify(override)).toThrow(/arturia:providerMode/)

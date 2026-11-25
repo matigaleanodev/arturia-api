@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { ENABLED_PROVIDERS } from '../config/catalog-config.js'
 import { TIMING } from '../config/timing.js'
 import type { ChatStore } from '../chat/turns.store.js'
 import { anthropicContextWindow, createAnthropicAdapter } from './anthropic.js'
@@ -26,6 +27,8 @@ export interface CatalogOptions {
   readonly environment?: 'pilot' | 'production'
   /** Provider-measured input bounds per model. Without one, the context window is the bound. */
   readonly calibration?: Readonly<Record<string, InputCalibration>>
+  /** Providers a turn may use. Defaults to the enabled providers: a selection of any other is denied, with no fallback. */
+  readonly providers?: readonly string[]
 }
 
 // Floors in microdollars per million for the supported uncached standard request.
@@ -70,6 +73,7 @@ export function catalogInputBound(text: string, model: string, options: Pick<Cat
 function validateSelection(selected: ModelSelection, options: CatalogOptions) {
   const { provider, model, tariff, maxOutputTokens: outputTokens } = selected
   const allowed = candidate(model)
+  if (!(options.providers ?? ENABLED_PROVIDERS).includes(allowed.provider)) throw new ModelPolicyDenied('Provider disabled')
   const pilot = (options.environment ?? 'pilot') === 'pilot'
   if (allowed.provider !== provider || !isCount(outputTokens) || outputTokens < allowed.minOutputTokens || outputTokens > maxOutputTokens ||
       (pilot && outputTokens > allowed.pilotMaxOutputTokens) ||
@@ -107,10 +111,19 @@ export function createCatalogTurnProvider(store: ChatStore, budget: ModelBudget,
   if (!isCount(timeoutMs) || timeoutMs < 1 || timeoutMs >= TIMING.providerTimeoutSeconds * 1000) {
     throw new ModelBoundError('Transport timeout must be below the provider deadline')
   }
-  const adapters = { openai: createOpenAIAdapter(wire, timeoutMs), anthropic: createAnthropicAdapter(wire, timeoutMs) }
+  const providers = options.providers ?? ENABLED_PROVIDERS
+  // Only the enabled providers have an adapter: a disabled one cannot be reached even by a forged request.
+  const adapters: Partial<Record<Entry['provider'], ReturnType<typeof createOpenAIAdapter>>> = {
+    ...(providers.includes('openai') && { openai: createOpenAIAdapter(wire, timeoutMs) }),
+    ...(providers.includes('anthropic') && { anthropic: createAnthropicAdapter(wire, timeoutMs) }),
+  }
   const transport: ModelTransport = {
     inputTokenBound: (text, model) => catalogInputBound(text, model, options),
-    stream: request => adapters[candidate(request.model).provider].stream(request),
+    stream: request => {
+      const adapter = adapters[candidate(request.model).provider]
+      if (!adapter) throw new ModelPolicyDenied('Provider disabled')
+      return adapter.stream(request)
+    },
   }
   return createTurnDispatcher(store, budget, () => {
     const selected = select()

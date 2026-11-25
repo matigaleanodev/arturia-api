@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
+import { ENABLED_PROVIDERS } from '../config/catalog-config.js'
 import type { CredentialProvider, ProviderCredentials } from '../secrets/provider-secret.js'
 import { ModelPolicyDenied } from './provider.js'
 import { WireNotSent, type ModelWire } from './wire.js'
@@ -33,6 +34,8 @@ export interface FetchWireOptions {
   /** Test servers only: loopback origins that replace a provider host. Anything else is refused at construction. */
   readonly origins?: Partial<Record<CredentialProvider, string>>
   readonly fetch?: typeof globalThis.fetch
+  /** Providers the transport may reach. Defaults to the enabled providers: any other is refused before a key is read. */
+  readonly providers?: readonly CredentialProvider[]
   /** Observes each response without its content: provider, status and request ID. */
   readonly onResponse?: (meta: ResponseMeta) => void
 }
@@ -56,10 +59,10 @@ function resolveOrigins(overrides: FetchWireOptions['origins']): Record<Credenti
  * cancellation belong to the adapter, which hands over the signal. A failure after the request was issued is
  * never retried here, because the provider may already have started billing it.
  */
-export function createFetchWire({ credentials, origins: overrides, fetch: send = globalThis.fetch, onResponse }: FetchWireOptions): ModelWire {
+export function createFetchWire({ credentials, origins: overrides, fetch: send = globalThis.fetch, onResponse, providers = ENABLED_PROVIDERS as readonly CredentialProvider[] }: FetchWireOptions): ModelWire {
   const origins = resolveOrigins(overrides)
   return async ({ provider, path, headers, body, signal }) => {
-    if (!Object.hasOwn(PROVIDER_PATHS, provider) || path !== PROVIDER_PATHS[provider as CredentialProvider] || signal.aborted) throw new WireNotSent()
+    if (!providers.includes(provider as CredentialProvider) || !Object.hasOwn(PROVIDER_PATHS, provider) || path !== PROVIDER_PATHS[provider as CredentialProvider] || signal.aborted) throw new WireNotSent()
     const name = provider as CredentialProvider
     let outbound: Headers
     try {

@@ -8,7 +8,8 @@ import { createGenerationWorker } from '../../src/chat/generate.worker.js'
 import { createChat } from '../../src/chat/turns.js'
 import { ChatStore, scopePartition } from '../../src/chat/turns.store.js'
 import { ModelBudget, type Tariff } from '../../src/models/budget.js'
-import { createCatalogTurnProvider } from '../../src/models/catalog.js'
+import { createCatalogTurnProvider as createEnabled } from '../../src/models/catalog.js'
+import { createCatalogTurnProvider } from '../support/all-providers.js'
 import { createFetchWire } from '../../src/models/wire.fetch.js'
 import { eventStream, sendEvents, startProviderServer } from '../support/provider-server.js'
 import { integrationDatabase } from '../support/dynamodb.js'
@@ -63,7 +64,7 @@ async function run(provider: 'openai' | 'anthropic', handler: Handler) {
   const server = await startProviderServer(handler)
   servers.push(server)
   budget = new ModelBudget(store, { anthropic: 3 * usd, openai: usd })
-  const wire = createFetchWire({ credentials: keys, origins: { [provider]: server.origin } })
+  const wire = createFetchWire({ credentials: keys, origins: { [provider]: server.origin }, providers: ['openai', 'anthropic'] })
   const ref = await conversation()
   const id = randomUUID()
   await createGenerationWorker(store, createCatalogTurnProvider(store, budget, () => selection(provider), wire)).runTurn(ref, id)

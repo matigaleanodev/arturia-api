@@ -3,7 +3,7 @@
 
 import { expect, test } from 'vitest'
 import { ModelPolicyDenied } from './provider.js'
-import { CATALOG_MODELS } from '../config/catalog-config.js'
+import { CATALOG_MODELS, ENABLED_CATALOG_MODELS, ENABLED_PROVIDERS } from '../config/catalog-config.js'
 import { PILOT_MAX_OUTPUT_TOKENS, checkCatalogConfig } from './catalog.js'
 import { PROVIDER_CAPS, catalogSelectionFor } from './catalog-runtime.js'
 
@@ -24,8 +24,9 @@ test('catalog_selection_uses_the_documented_floors_and_expires', () => {
 })
 
 test('catalog_caps_hold_one_attempt_of_each_model_and_stay_below_the_monthly_cap', () => {
-  expect(PROVIDER_CAPS).toEqual({ openai: 6_000_000, anthropic: 6_000_000 })
-  for (const model of ['gpt-6-luna', 'claude-sonnet-5-5']) {
+  // Only OpenAI is enabled: Anthropic has no cap, so even a leaked selection could not reserve anything.
+  expect(PROVIDER_CAPS).toEqual({ openai: 6_000_000 })
+  for (const model of ['gpt-6-luna']) {
     const report = checkCatalogConfig(catalogSelectionFor(model, '2026-11-20', now), PROVIDER_CAPS)
     expect(report).toBeDefined()
   }
@@ -33,4 +34,15 @@ test('catalog_caps_hold_one_attempt_of_each_model_and_stay_below_the_monthly_cap
 
 test('catalog_models_list_matches_the_catalog', () => {
   expect([...CATALOG_MODELS].sort()).toEqual(Object.keys(PILOT_MAX_OUTPUT_TOKENS).sort())
+})
+
+test('enabled_providers_are_consistent_across_models_caps_and_catalog', () => {
+  expect([...ENABLED_PROVIDERS]).toEqual(['openai'])
+  expect(Object.keys(PROVIDER_CAPS).sort()).toEqual([...ENABLED_PROVIDERS].sort())
+  for (const model of ENABLED_CATALOG_MODELS) {
+    expect(CATALOG_MODELS).toContain(model)
+    expect(ENABLED_PROVIDERS).toContain(catalogSelectionFor(model, '2026-11-20', now).provider)
+  }
+  // The monthly cap of US$ 10 stays above the OpenAI cap of US$ 6.
+  expect(Object.values(PROVIDER_CAPS).every(cap => cap <= 10_000_000)).toBe(true)
 })

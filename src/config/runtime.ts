@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { CORS_ORIGIN_VARIABLE, isAllowedOrigin } from '../http/cors.js'
-import { CATALOG_MODELS, PROVIDER_SECRET_VARIABLE, isFreshDay, isProviderSecretArn } from './catalog-config.js'
+import { ENABLED_CATALOG_MODELS, PROVIDER_SECRET_VARIABLE, isFreshDay, isProviderSecretArn } from './catalog-config.js'
 
 type Environment = Readonly<Record<string, string | undefined>>
 
@@ -80,7 +80,7 @@ export function loadCatalogRuntime(env: Environment, now: Date = new Date()): Ca
   const { read, done } = reader(env)
   const runtime = {
     secretArn: read(PROVIDER_SECRET_VARIABLE, isProviderSecretArn),
-    model: read('ARTURIA_MODEL', v => CATALOG_MODELS.includes(v)),
+    model: read('ARTURIA_MODEL', v => ENABLED_CATALOG_MODELS.includes(v)),
     tariffVerifiedAt: read('ARTURIA_TARIFF_VERIFIED_AT', v => isFreshDay(v, now)),
   }
   done()

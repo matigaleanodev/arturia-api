@@ -17,7 +17,7 @@ export function createOpenAIAdapter(wire: ModelWire, timeoutMs = TIMING.transpor
     path: '/v1/responses',
     build: ({ model, text, limits }) => ({
       model, input: text, stream: true, store: false, max_output_tokens: limits.outputTokens,
-      service_tier: 'default', prompt_cache_options: { mode: 'explicit' },
+      reasoning: { effort: 'low' }, service_tier: 'default', prompt_cache_options: { mode: 'explicit' },
     }),
     async *normalize(events) {
       let refused = false

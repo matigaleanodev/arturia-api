@@ -15,7 +15,9 @@ const tariffs: Record<string, Tariff> = {
   anthropic: { ...base, inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 },
 }
 const models = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5' }
-const checkCatalogConfig = (...args: Parameters<typeof checkConfig>) => checkConfig(...args)!
+// The runtime default enables OpenAI only; these cases keep covering the bounds of both catalog models.
+const checkCatalogConfig = (selected: Parameters<typeof checkConfig>[0], caps: Parameters<typeof checkConfig>[1],
+  options: NonNullable<Parameters<typeof checkConfig>[2]> = {}) => checkConfig(selected, caps, { providers: ['openai', 'anthropic'], ...options })!
 const selection = (provider: 'openai' | 'anthropic', maxOutputTokens = 64) => ({
   enabled: true, provider, model: models[provider], maxOutputTokens, tariff: tariffs[provider],
 })
@@ -113,4 +115,10 @@ test('calibrated_bound_reduces_the_config_bound_for_the_largest_input', () => {
   expect(calibrated.attemptBoundMicros).toBe(costMicros(tariffs.anthropic,
     { inputTokens: MAX_INPUT_BYTES + 64, outputTokens: 4096, reasoningTokens: 0, toolTokens: 0, toolCalls: 0 }))
   expect(calibrated.attemptBoundMicros).toBeLessThan(plain.attemptBoundMicros)
+})
+
+test('disabled_provider_selection_is_a_config_error', () => {
+  expect(() => checkConfig(selection('anthropic', 4096), { anthropic: 6 * usd })).toThrow(ModelPolicyDenied)
+  expect(() => checkConfig(selection('anthropic', 4096), { anthropic: 6 * usd }, { providers: ['openai'] })).toThrow(ModelPolicyDenied)
+  expect(checkConfig(selection('openai', 4096), { openai: 6 * usd })).toMatchObject({ provider: 'openai' })
 })
