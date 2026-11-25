@@ -8,6 +8,8 @@ type TurnReference = Readonly<{ userId: string; scopeId: string; turnId: string 
 interface Message { messageId: string; body: string; groupId: string; dedupId: string; receives: number; visibleAt: number }
 export interface Delivery { readonly messageId: string; readonly body: string }
 
+export const DEDUPLICATION_WINDOW_MS = 5 * 60 * 1000
+
 /**
  * In-memory model of the turn queue as the Lambda event source sees it, with batch size one: the
  * production group and deduplication IDs, visibility after every receive, one message in flight per
@@ -16,13 +18,21 @@ export interface Delivery { readonly messageId: string; readonly body: string }
 export class FifoTurnQueue {
   private readonly queue: Message[] = []
   readonly deadLetters: Message[] = []
+  private readonly accepted = new Map<string, number>()
   private seq = 0
+  /**
+   * SQS FIFO drops a send whose deduplication ID was accepted within the last five minutes, even if the
+   * first message was already consumed and deleted. `clock` drives that window; without it the window never closes.
+   */
   constructor(private readonly visibilityMs = TIMING.turnVisibilitySeconds * 1000,
-    private readonly maxReceives = TIMING.turnMaxReceives) {}
+    private readonly maxReceives = TIMING.turnMaxReceives, private readonly clock: () => number = () => 0) {}
 
   send(ref: TurnReference) {
     const { MessageBody, MessageGroupId, MessageDeduplicationId } = sqsMessage('local-queue', ref)
-    if ([...this.queue, ...this.deadLetters].some(m => m.dedupId === MessageDeduplicationId)) return
+    const now = this.clock()
+    const first = this.accepted.get(MessageDeduplicationId)
+    if (first !== undefined && now - first < DEDUPLICATION_WINDOW_MS) return
+    this.accepted.set(MessageDeduplicationId, now)
     this.queue.push({ messageId: `message-${++this.seq}`, body: MessageBody, groupId: MessageGroupId,
       dedupId: MessageDeduplicationId, receives: 0, visibleAt: 0 })
   }

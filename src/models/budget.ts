@@ -30,9 +30,16 @@ export interface Usage {
   readonly toolCalls: number
 }
 type Receipt = { kind: 'unknown' } | { kind: 'invoice'; costMicros: number } | { kind: 'reported'; usage: Usage; noCharge?: boolean }
-type Audit = { model: string; operation: 'chat' | 'tool' | 'extraction' | 'automation'; tariff: Tariff }
+type Audit = { model: string; operation: 'chat' | 'tool' | 'extraction' | 'automation'; tariff: Tariff; turnId?: string }
+/** Opaque operator evidence reference and origin, recorded with an administrative settlement. Never content. */
+export interface SettlementAudit { readonly reference: string; readonly source: string }
 type Writes = NonNullable<TransactWriteCommandInput['TransactItems']>
 const attemptKey = (id: string) => ({ pk: 'MODEL-ATTEMPT#' + id, sk: 'RECEIPT' })
+// One row per attempt in its month, queryable without a scan. It mirrors `state` and `costMicros`, and
+// every write that changes the attempt changes this row in the same transaction.
+const ledgerKey = (month: string, userId: string, attemptId: string) => ({ pk: 'MODEL-LEDGER#' + month, sk: userId + '#' + attemptId })
+// A turn sends to a provider at most once: its single reservation is claimed here, whatever the attempt ID.
+const turnGuardKey = (userId: string, scopeId: string, turnId: string) => ({ pk: 'MODEL-TURN#' + JSON.stringify([userId, scopeId, turnId]), sk: 'RESERVATION' })
 const counterKeys = (month: string, provider: string) => ['TOTAL', 'PROVIDER#' + provider].map(sk => ({
   pk: 'MODEL-BUDGET#' + month, sk,
 }))
@@ -105,11 +112,21 @@ export class ModelBudget {
         maxCost > Math.min(MONTHLY_CAP, cap)) return { allowed: false } as const
     const TableName = this.store.tableName
     const limits = [MONTHLY_CAP, cap]
+    const turnId = audit?.turnId
+    const reservedAt = now.getTime()
     const allowed = await this.write([
       { Put: { TableName, ConditionExpression: 'attribute_not_exists(pk)', Item: {
-        ...attemptKey(attemptId), userId, scopeId, provider, month, maxCost, state: 'reserved',
+        ...attemptKey(attemptId), userId, scopeId, provider, month, maxCost, state: 'reserved', reservedAt,
+        ...(turnId && { turnId }),
         ...(audit && { model: audit.model, operation: audit.operation, tariff: tariffSnapshot(audit.tariff, now.getTime()) }),
       } } },
+      { Put: { TableName, ConditionExpression: 'attribute_not_exists(pk)', Item: {
+        ...ledgerKey(month, userId, attemptId), attemptId, userId, scopeId, provider, maxCost, state: 'reserved', reservedAt,
+        ...(turnId && { turnId }), ...(audit && { model: audit.model }),
+      } } },
+      ...(turnId ? [{ Put: { TableName, ConditionExpression: 'attribute_not_exists(pk)', Item: {
+        ...turnGuardKey(userId, scopeId, turnId), attemptId, month,
+      } } }] : []),
       ...counterKeys(month, provider).map((Key, i) => ({ Update: { TableName, Key,
         UpdateExpression: 'ADD allocated :amount',
         ConditionExpression: 'attribute_not_exists(allocated) OR allocated <= :remaining',
@@ -119,7 +136,7 @@ export class ModelBudget {
     return { allowed, month }
   }
 
-  async settleAttempt(attemptId: string, receipt: Receipt) {
+  async settleAttempt(attemptId: string, receipt: Receipt, audit?: SettlementAudit) {
     const row = await this.getAttempt(attemptId)
     if (!row) throw new Error('Unknown model attempt')
     if (receipt.kind === 'unknown') return
@@ -137,10 +154,18 @@ export class ModelBudget {
         ExpressionAttributeNames: { '#s': 'state', ...(usage && { '#u': 'usage' }) },
         ExpressionAttributeValues: { ':reserved': 'reserved', ':settled': 'settled', ':cost': cost, ...(usage && { ':usage': usage }) },
       } },
+      { Update: { TableName, Key: ledgerKey(row.month, row.userId, attemptId), ConditionExpression: 'attribute_exists(pk)',
+        UpdateExpression: 'SET #s = :settled, costMicros = :cost', ExpressionAttributeNames: { '#s': 'state' },
+        ExpressionAttributeValues: { ':settled': 'settled', ':cost': cost } } },
       ...counterKeys(row.month, row.provider).map(Key => ({ Update: { TableName, Key,
         ConditionExpression: 'attribute_exists(allocated)', UpdateExpression: 'ADD allocated :delta',
         ExpressionAttributeValues: { ':delta': cost - row.maxCost },
       } })),
+      ...(audit ? [{ Put: { TableName, ConditionExpression: 'attribute_not_exists(pk)', Item: {
+        pk: 'MODEL-SETTLEMENT#' + attemptId, sk: 'AUDIT', attemptId, month: row.month, provider: row.provider,
+        scopeId: row.scopeId, ...(row.turnId && { turnId: row.turnId }), maxCost: row.maxCost, costMicros: cost,
+        reference: audit.reference, source: audit.source, settledAt: this.store.now().getTime(),
+      } } }] : []),
     ])
     if (!won && !matches((await this.getAttempt(attemptId))!)) throw new Error('Conflicting model settlement')
   }

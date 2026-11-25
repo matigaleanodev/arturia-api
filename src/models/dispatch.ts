@@ -40,6 +40,8 @@ interface Job {
   readonly attemptId: string
   readonly userId: string
   readonly scopeId: string
+  /** Set for chat turns: the ledger then holds a single reservation per turn, whatever the attempt ID. */
+  readonly turnId?: string
   readonly operation: Operation
   readonly signal: AbortSignal
   readAuthorizedContext(provider: string): Promise<ModelContext>
@@ -60,7 +62,7 @@ export async function* dispatchModel(budget: ModelBudget, now: () => Date, confi
   const maxCost = costMicros(tariff, { ...limits, inputTokens: transport.inputTokenBound(text, model) })
   job.signal.throwIfAborted()
   const receipt = await budget.reserveAttempt(job.attemptId, job.userId, job.scopeId, provider, maxCost,
-    { model, operation: job.operation, tariff })
+    { model, operation: job.operation, tariff, ...(job.turnId && { turnId: job.turnId }) })
   if (!receipt.allowed) throw new ModelPolicyDenied('Model attempt not authorized')
   try {
     const current = safeModelText(await job.readAuthorizedContext(provider))
@@ -103,7 +105,7 @@ export async function* dispatchModel(budget: ModelBudget, now: () => Date, confi
 export function createTurnDispatcher(store: ChatStore, budget: ModelBudget, configure: () => Configuration,
   transport: ModelTransport): Provider {
   return { stream: request => dispatchModel(budget, store.now, configure, transport, {
-    attemptId: request.attemptId, userId: request.ref.userId, scopeId: request.ref.scopeId,
+    attemptId: request.attemptId, userId: request.ref.userId, scopeId: request.ref.scopeId, turnId: request.ref.turnId,
     operation: 'chat', signal: request.signal, readAuthorizedContext: provider => currentTurnContext(store, request, provider),
   }) }
 }
