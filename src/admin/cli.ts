@@ -5,12 +5,16 @@
 // table, region, profile and expected account, and confirm the account from the table ARN first.
 // Output is one JSON line; the Cognito subject is masked and SDK errors are reported by name only.
 
+import { readFile, stat } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 import { SQSClient } from '@aws-sdk/client-sqs'
 import { ChatStore } from '../chat/turns.store.js'
 import { sqsTurnQueue, type TurnQueue } from '../jobs/outbox.js'
+import { ledgerStore } from '../models/ledger-store.js'
+import { MIN_UNCERTAIN_AGE_SECONDS, MONTH, applySettlement, listUncertainReservations, parseEvidence, planSettlement }
+  from '../models/settlement-admin.js'
 import { inspectTurn, staleTurns } from './inspect.js'
 import { pendingOutboxFor, republishOutbox } from './outbox-recovery.js'
 import { AdminError, PILOT_SCOPE_ACTIONS, PILOT_SCOPE_IDS, applyProvision, assertSubject, confirmTable, readProvision,
@@ -24,6 +28,11 @@ interface BaseDeps {
 }
 export interface ProvisionDeps extends BaseDeps { now(): number }
 export interface InspectDeps extends BaseDeps { now(): number }
+export interface SettleDeps extends BaseDeps {
+  now(): number
+  /** Reads and parses the operator's evidence file. Validation of its content is `parseEvidence`'s. */
+  readEvidence(path: string): Promise<unknown>
+}
 export interface RepublishDeps extends BaseDeps {
   createQueue(target: OperatorTarget, queueUrl: string): TurnQueue & { close?(): void }
 }
@@ -231,6 +240,70 @@ export function runInspect(argv: readonly string[], env: Env, deps: InspectDeps)
   })
 }
 
+/**
+ * `settle-attempts`: reconciles uncertain model reservations of one user and UTC month against exported
+ * provider evidence. Without `--evidence` it only lists them. With it, the default is a dry run that prints
+ * the plan; `--apply` settles the matched attempts. Without evidence an attempt keeps its reservation.
+ * Exit 2 when the evidence has entries that could not be matched.
+ */
+export function runSettle(argv: readonly string[], env: Env, deps: SettleDeps): Promise<number> {
+  return run(deps.out, async () => {
+    refuseEnvironment(env)
+    let parsed
+    try {
+      parsed = parseArgs({ args: [...argv], strict: true, allowPositionals: false, options: {
+        sub: { type: 'string' }, 'all-users': { type: 'boolean' }, month: { type: 'string' }, scope: { type: 'string', multiple: true },
+        evidence: { type: 'string' }, apply: { type: 'boolean' }, 'ledger-table': { type: 'string' }, ...targetOptions,
+      } })
+    } catch { throw new AdminError('Argumentos inválidos') }
+    const { values } = parsed
+    // Without --sub the chat table is not consulted, so it can be reconciled after the chat table was recreated.
+    if (!values.sub === !values['all-users']) throw new AdminError('Indicá exactamente uno: --sub o --all-users')
+    if (values.sub) assertSubject(values.sub)
+    const month = values.month
+    if (!month || !MONTH.test(month)) throw new AdminError('--month debe ser YYYY-MM (mes UTC de la reserva)')
+    if (values.apply && !values.evidence) throw new AdminError('--apply requiere --evidence')
+    const scopeIds = [...new Set(values.scope ?? PILOT_SCOPE_IDS)]
+    if (!scopeIds.every(id => (PILOT_SCOPE_IDS as readonly string[]).includes(id))) {
+      throw new AdminError('--scope debe ser ' + PILOT_SCOPE_IDS.join(' o '))
+    }
+    const ledgerName = values['ledger-table']
+    if (!ledgerName) throw new AdminError('Falta --ledger-table')
+    if (ledgerName === values.table) throw new AdminError('--ledger-table debe ser distinta de --table')
+    const ledgerTarget = readTarget({ ...values, table: ledgerName })
+    const chatTarget = values.sub ? readTarget(values) : undefined
+    // The evidence is read and validated before any AWS client exists.
+    const evidence = values.evidence ? parseEvidence(await deps.readEvidence(values.evidence)) : undefined
+    if (evidence && evidence.month !== month) throw new AdminError('El mes de la evidencia no coincide con --month')
+    const client = deps.createClient(ledgerTarget)
+    try {
+      await confirmTable(client, ledgerTarget)
+      if (chatTarget) await confirmTable(client, chatTarget)
+      const store = ledgerStore(client, ledgerTarget.tableName, () => new Date(deps.now()), chatTarget?.tableName)
+      const userId = values.sub ? await new ChatStore(client, chatTarget!.tableName).findUserIdBySubject(values.sub) : undefined
+      if (values.sub && !userId) throw new AdminError('El sub no está aprovisionado')
+      const subject = values.sub ? mask(values.sub) : 'all-users'
+      const options = { ...(userId && { userId }), scopeIds }
+      if (!evidence) {
+        const attempts = await listUncertainReservations(store, month, options)
+        deps.out(JSON.stringify({ mode: 'list', subject, month, minAgeSeconds: MIN_UNCERTAIN_AGE_SECONDS, count: attempts.length,
+          reservedMicros: attempts.reduce((sum, a) => sum + a.maxCost, 0), attempts }))
+        return 0
+      }
+      const plan = await planSettlement(store, evidence, options)
+      if (!values.apply) {
+        deps.out(JSON.stringify({ mode: 'dry-run', subject, ...plan }))
+      } else {
+        const result = await applySettlement(store, plan)
+        deps.out(JSON.stringify({ mode: 'apply', subject, month, ...result, kept: plan.kept, rejected: plan.rejected }))
+      }
+      return plan.rejected.length ? 2 : 0
+    } finally {
+      client.destroy()
+    }
+  })
+}
+
 /** Real AWS clients: explicit region and profile, no endpoint overrides (refused above). */
 export function awsProvisionDeps(): ProvisionDeps {
   return {
@@ -253,6 +326,24 @@ export function awsInspectDeps(): InspectDeps {
   return {
     createClient: ({ region, profile }) => new DynamoDBClient({ region, profile, maxAttempts: 3 }),
     now: () => Date.now(),
+    out: line => process.stdout.write(line + '\n'),
+  }
+}
+export const EVIDENCE_MAX_BYTES = 1024 * 1024
+export function awsSettleDeps(): SettleDeps {
+  return {
+    createClient: ({ region, profile }) => new DynamoDBClient({ region, profile, maxAttempts: 3 }),
+    now: () => Date.now(),
+    readEvidence: async path => {
+      let text: string
+      try {
+        if ((await stat(path)).size > EVIDENCE_MAX_BYTES) throw new AdminError('La evidencia supera 1 MiB')
+        text = await readFile(path, 'utf8')
+      } catch (error) {
+        throw error instanceof AdminError ? error : new AdminError('No se pudo leer el archivo de evidencia')
+      }
+      try { return JSON.parse(text) as unknown } catch { throw new AdminError('La evidencia no es JSON válido') }
+    },
     out: line => process.stdout.write(line + '\n'),
   }
 }

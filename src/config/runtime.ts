@@ -55,6 +55,19 @@ export function loadWorkerRuntime(env: Environment): WorkerRuntime {
   return runtime
 }
 
+export interface LedgerRuntime { readonly ledgerTableName: string }
+
+/**
+ * The AI consumption ledger lives in its own retained table. It must differ from the chat table, or
+ * recreating the chat table would reset the monthly consumption. Required only where a billable provider can run.
+ */
+export function loadLedgerRuntime(env: Environment): LedgerRuntime {
+  const { read, done } = reader(env)
+  const ledgerTableName = read('ARTURIA_LEDGER_TABLE_NAME', v => tableName.test(v) && v !== env.ARTURIA_TABLE_NAME)
+  done()
+  return { ledgerTableName }
+}
+
 /** Evaluates once per execution environment and keeps either the value or the failure. */
 export function memoize<T>(load: () => T): () => T {
   let state: { ok: true; value: T } | { ok: false; error: unknown } | undefined

@@ -16,6 +16,7 @@
     "bundle": "node scripts/bundle.mjs",
     "synth:pilot": "npm run bundle && cdk synth --no-lookups --no-telemetry --no-notices --output cdk.pilot.out -c arturia:target=pilot",
     "provision:pilot": "tsc --project tsconfig.build.json && node scripts/provision-pilot.mjs",
+    "settle:attempts": "tsc --project tsconfig.build.json && node scripts/settle-attempts.mjs",
     "republish:outbox": "tsc --project tsconfig.build.json && node scripts/republish-outbox.mjs",
     "pilot:inspect": "tsc --project tsconfig.build.json && node scripts/pilot-inspect.mjs",
     "smoke:sse:aws": "tsc --project tsconfig.build.json && node scripts/smoke-sse.mjs",

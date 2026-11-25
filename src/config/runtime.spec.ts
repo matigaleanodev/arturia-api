@@ -3,7 +3,7 @@
 
 import { expect, test } from 'vitest'
 import { pilotFixture, FIXTURE_BLOCKS, FIXTURE_INTERVAL_MS } from '../models/fixture-provider.js'
-import { ConfigError, loadHttpRuntime, loadWorkerRuntime, memoize } from './runtime.js'
+import { ConfigError, loadHttpRuntime, loadLedgerRuntime, loadWorkerRuntime, memoize } from './runtime.js'
 
 const http = { ARTURIA_TABLE_NAME: 'arturia-pilot-table', ARTURIA_CLIENT_ID: 'fixtureclient0123456789abcd',
   ARTURIA_ALLOWED_ORIGIN: 'https://d111111abcdef8.cloudfront.net' }
@@ -36,6 +36,22 @@ test('config_missing_or_invalid_fails_closed', () => {
     for (const value of ['tabla con espacios', 'Bearer secret-value!', 'catalog', 'Pilot!']) {
       expect((error as Error).message).not.toContain(value)
     }
+  }
+})
+
+test('ledger_config_fails_closed_and_must_be_a_separate_table', () => {
+  const ok = { ...worker, ARTURIA_LEDGER_TABLE_NAME: 'arturia-pilot-ledger' }
+  expect(loadLedgerRuntime(ok)).toEqual({ ledgerTableName: 'arturia-pilot-ledger' })
+  const cases: Array<Record<string, string>> = [
+    worker, { ...ok, ARTURIA_LEDGER_TABLE_NAME: ' ' }, { ...ok, ARTURIA_LEDGER_TABLE_NAME: 'con espacios' },
+    // Sharing the chat table would let recreating it reset the monthly consumption.
+    { ...ok, ARTURIA_LEDGER_TABLE_NAME: worker.ARTURIA_TABLE_NAME },
+  ]
+  for (const env of cases) {
+    const error = failure(() => loadLedgerRuntime(env))
+    expect(error).toBeInstanceOf(ConfigError)
+    expect((error as ConfigError).variables).toEqual(['ARTURIA_LEDGER_TABLE_NAME'])
+    expect((error as Error).message).not.toContain('con espacios')
   }
 })
 
