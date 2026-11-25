@@ -6,7 +6,7 @@ API en TypeScript estricto y definiciones de infraestructura en AWS CDK v2. Leer
 - Separar el dominio de los adaptadores de transporte y persistencia. Toda operación de datos se aísla por usuario y ámbito.
 - Usar datos e identidades sintéticas en las pruebas, con reloj controlado donde corresponda. Mantener las credenciales y el contenido de los mensajes fuera de logs y colas.
 - Ejecutar `npm ci`, `npm run verify`, `npm run verify:local` y `npm run synth` para comprobar cambios de base. Usar el proyecto Vitest correspondiente y agregar filtros después de `--`.
-- `README.md` y `README.es.md` contienen la referencia técnica.
+- `README.md` y `README.es.md` son el punto de entrada; la referencia técnica está en `docs/` (pares EN/ES).
 
 ## Flujo Git
 
