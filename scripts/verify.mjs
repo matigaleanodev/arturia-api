@@ -9,7 +9,7 @@ if (mode && !local) throw new Error('Use the individual test scripts to filter v
 
 const npm = process.env.npm_execpath
 if (!npm) throw new Error('Run this script via npm run verify or npm run verify:local')
-const scripts = ['test:contract', 'test:unit', 'test:infra', 'build']
+const scripts = ['test:contract', 'test:unit', 'build', 'test:infra']
 if (local) scripts.push('test:integration')
 
 for (const script of scripts) {
