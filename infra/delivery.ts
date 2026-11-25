@@ -40,6 +40,8 @@ export const NAMES = {
   table: `${P}chat`,
   /** AI consumption ledger: retained table of the foundation, so recreating the pilot cannot reset the monthly budget. */
   ledgerTable: `${P}ledger`,
+  /** The one secret with the provider keys, created by the administrator (never by CloudFormation) with the console or a file. */
+  providerSecret: 'arturia-pilot/providers',
   turnQueue: `${P}turns.fifo`,
   turnDeadLetters: `${P}turns-dlq.fifo`,
   relayDeadLetters: `${P}relay-dlq`,
@@ -94,6 +96,8 @@ function arns(t: Target) {
   const topic = regional('sns', NAMES.alertsTopic)
   return {
     table, ledger, tableStream: `${table}/stream/*`, fn, logs,
+    // Secrets Manager appends a dash and six random characters to the name: the pattern pins the name and nothing else.
+    providerSecret: regional('secretsmanager', `secret:${NAMES.providerSecret}-??????`),
     // Function log groups and the access log group, with and without the log stream suffix.
     logGroups: [`log-group:/aws/lambda/${P}*`, `log-group:${P}*`].map(group => regional('logs', group)),
     alarms: regional('cloudwatch', `alarm:${P}*`),
@@ -143,6 +147,8 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
     worker: [
       allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.workerFunction)]),
       allow([...WORKER_TABLE_ACTIONS], [a.table, a.ledger]),
+      // The provider keys: read one secret, nothing else. The managed `aws/secretsmanager` key needs no KMS grant.
+      allow(['secretsmanager:GetSecretValue'], [a.providerSecret]),
       // The SQS event source polls with the function role.
       allow(['sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueUrl', 'sqs:DeleteMessage',
         'sqs:GetQueueAttributes'], [a.queue(NAMES.turnQueue)]),
@@ -330,6 +336,7 @@ export function boundaryPolicy(t: Target) {
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
       'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
       'ec2:DescribeNetworkInterfaces'], ['*'], sameRegion(t)),
+    allow(['secretsmanager:GetSecretValue'], [arns(t).providerSecret]),
     allow(['iam:PassRole'], [`arn:${t.partition}:iam::${t.account}:role/${named}`]),
   ])
 }
@@ -350,6 +357,8 @@ export function operatorPolicy(t: Target) {
     allow(['iam:PassRole'], [cfn], passTo('cloudformation.amazonaws.com')),
     allow(['s3:GetObject', 's3:PutObject'], [a.artifacts]),
     allow(['s3:ListBucket', 's3:GetBucketLocation', 's3:GetEncryptionConfiguration'], [a.bucket]),
+    // Confirms the provider secret exists before the billable mode is deployed. It cannot read the value.
+    allow(['secretsmanager:DescribeSecret'], [a.providerSecret]),
   ])
 }
 

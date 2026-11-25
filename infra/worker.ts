@@ -4,7 +4,7 @@
 import { Duration, aws_dynamodb as dynamodb, aws_iam as iam, aws_lambda as lambda, aws_sqs as sqs } from 'aws-cdk-lib'
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
-import type { ProviderMode } from '../src/config/runtime.ts'
+import type { CatalogRuntime, ProviderMode } from '../src/config/runtime.ts'
 import { TIMING, checkTiming, type Timing } from '../src/config/timing.ts'
 import { mapEventSourcesByArn } from './event-source-arn.ts'
 
@@ -19,6 +19,8 @@ interface WorkerProps {
   readonly role?: iam.IRole
   readonly functionName?: string
   readonly providerMode?: ProviderMode
+  /** Required exactly when the mode is `catalog`: the exact secret ARN, the model and the tariff verification date. */
+  readonly catalog?: CatalogRuntime
   /** Name of the retained ledger table of the foundation. Passed by name: it is not part of this stack. */
   readonly ledgerTableName: string
   readonly timing?: Timing
@@ -31,14 +33,17 @@ interface WorkerProps {
  * turn and the FIFO rule of returning the rest of a batch never applies. The event source caps
  * concurrency instead of reserved concurrency.
  */
-export function addWorker(scope: Construct, { table, queue, code, role, functionName, providerMode = 'fixture', ledgerTableName, timing = TIMING,
+export function addWorker(scope: Construct, { table, queue, code, role, functionName, providerMode = 'fixture', catalog, ledgerTableName, timing = TIMING,
   paused = false }: WorkerProps) {
   const t = checkTiming(timing)
+  if ((providerMode === 'catalog') !== (catalog !== undefined)) throw new Error('The catalog mode needs its secret, model and tariff date, and only it')
   const worker = new lambda.Function(scope, 'GenerationWorker', {
     functionName, runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code, role,
     timeout: Duration.seconds(t.workerTimeoutSeconds), memorySize: 256,
     environment: { ARTURIA_TABLE_NAME: table.tableName, ARTURIA_ENVIRONMENT: 'pilot', ARTURIA_PROVIDER_MODE: providerMode,
-      ARTURIA_LEDGER_TABLE_NAME: ledgerTableName },
+      ARTURIA_LEDGER_TABLE_NAME: ledgerTableName,
+      ...(catalog && { ARTURIA_PROVIDER_SECRET_ARN: catalog.secretArn, ARTURIA_MODEL: catalog.model,
+        ARTURIA_TARIFF_VERIFIED_AT: catalog.tariffVerifiedAt }) },
   })
   worker.addToRolePolicy(new iam.PolicyStatement({ actions: WORKER_TABLE_ACTIONS, resources: [table.tableArn] }))
   worker.addEventSource(new SqsEventSource(queue, {

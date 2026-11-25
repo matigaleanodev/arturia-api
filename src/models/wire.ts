@@ -14,6 +14,16 @@ type WireRequest = {
 
 // The caller supplies a single POST with no redirects or retries. There is no default network client.
 export type ModelWire = (request: WireRequest) => Promise<Response>
+
+/**
+ * A wire throws this only when it can certify that no request left the process (unknown destination, no
+ * credential, already cancelled). Nothing was sent, so nothing can have been billed: the attempt fails at zero
+ * cost instead of keeping its reservation. Any other wire failure is an unconfirmed charge.
+ */
+export class WireNotSent extends Error {
+  override name = 'WireNotSent'
+  constructor() { super('Model request not sent') }
+}
 type Payload = Record<string, unknown>
 
 const bodyLimit = 8 * 1024 * 1024
@@ -164,7 +174,12 @@ export function createAdapter(protocol: Protocol, wire: ModelWire, timeoutMs: nu
           yield event
         }
         throw new Error('Missing terminal model usage')
-      } catch {
+      } catch (error) {
+        if (error instanceof WireNotSent && !response) {
+          yield { type: 'usage', failed: true,
+            usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, toolTokens: 0, toolCalls: 0 } }
+          return
+        }
         throw new UncertainSend('Model charge unconfirmed')
       } finally {
         clearTimeout(timeout)

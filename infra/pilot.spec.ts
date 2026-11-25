@@ -383,3 +383,54 @@ test('cloudformation role scopes the web hosting resources', () => {
   const operator = statements(operatorPolicy(target)).flatMap(statement => statement.Action)
   expect(operator.some(action => action.startsWith('cloudfront:'))).toBe(false)
 })
+
+describe('catalog_mode_requires_secret_arn', () => {
+  const web = tempDir()
+  const webDistDir = join(web, 'dist', 'arturia', 'browser')
+  mkdirSync(webDistDir, { recursive: true })
+  cpSync(WEB_FIXTURE_DIR, webDistDir, { recursive: true })
+  const bundles = tempDir()
+  for (const name of Object.keys(BUNDLES)) {
+    mkdirSync(join(bundles, name))
+    writeFileSync(join(bundles, name, 'index.cjs'), 'exports.handler=async()=>{}')
+  }
+  const arn = `arn:aws:secretsmanager:us-east-1:${target.account}:secret:arturia-pilot/providers-AbCdEf`
+  const today = new Date().toISOString().slice(0, 10)
+  const base = { 'arturia:target': 'pilot', 'arturia:account': target.account, 'arturia:region': 'us-east-1', 'arturia:workerPaused': 'false' }
+  const catalog = { ...base, 'arturia:providerMode': 'catalog', 'arturia:providerSecretArn': arn, 'arturia:model': 'gpt-6-luna',
+    'arturia:tariffVerifiedAt': today }
+  const resolve = (context: Record<string, unknown>) => resolvePilotTarget(key => context[key], { ARTURIA_WEB_DIR: web }, bundles)
+
+  test('a complete catalog context reaches the worker environment and nothing else changes', () => {
+    const resolved = resolve(catalog)
+    expect(resolved).toMatchObject({ synthetic: false, providerMode: 'catalog' })
+    const { template } = synthPilot(resolved)
+    const workers = Object.values(template.findResources('AWS::Lambda::Function')).filter(fn => fn.Properties.FunctionName === NAMES.workerFunction)
+    expect(workers).toHaveLength(1)
+    expect(workers[0]!.Properties.Environment.Variables).toMatchObject({ ARTURIA_PROVIDER_MODE: 'catalog', ARTURIA_PROVIDER_SECRET_ARN: arn,
+      ARTURIA_MODEL: 'gpt-6-luna', ARTURIA_TARIFF_VERIFIED_AT: today, ARTURIA_LEDGER_TABLE_NAME: NAMES.ledgerTable })
+    // The key never appears in the template: only the ARN of the secret does.
+    expect(JSON.stringify(template.toJSON())).not.toMatch(/sk-[A-Za-z0-9]|x-api-key|Bearer /i)
+  }, 60_000)
+
+  test('every missing or inconsistent piece stops the synthesis', () => {
+    const without = (key: string) => { const { [key]: _removed, ...rest } = catalog as Record<string, string>; return rest }
+    for (const key of ['arturia:providerSecretArn', 'arturia:model', 'arturia:tariffVerifiedAt']) {
+      expect(() => resolve(without(key)), key).toThrow(/arturia:providerMode/)
+    }
+    const invalid = [
+      { 'arturia:providerSecretArn': arn.replace(target.account, '222222222222') },
+      { 'arturia:providerSecretArn': arn.replace('us-east-1', 'us-west-2') },
+      { 'arturia:providerSecretArn': arn.replace('providers', 'other') },
+      { 'arturia:model': 'gpt-4' },
+      { 'arturia:tariffVerifiedAt': '2020-01-01' },
+    ]
+    for (const override of invalid) expect(() => resolve({ ...catalog, ...override }), JSON.stringify(override)).toThrow(/arturia:providerMode/)
+    // The secret, model and tariff date only exist in catalog mode.
+    for (const mode of [undefined, 'fixture', 'fail']) {
+      const context = { ...catalog, ...(mode ? { 'arturia:providerMode': mode } : {}) }
+      if (!mode) delete (context as Record<string, unknown>)['arturia:providerMode']
+      expect(() => resolve(context), String(mode)).toThrow(/arturia:providerSecretArn/)
+    }
+  })
+})

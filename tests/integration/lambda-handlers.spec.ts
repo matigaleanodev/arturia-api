@@ -407,7 +407,12 @@ describe('packaged handlers', () => {
     expect(http.logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
       code: 'CONFIG_INVALID', variables: ['ARTURIA_CLIENT_ID'] }))
     const message = { Records: [{ messageId: 'cfg-1', body: '{}' }] }
-    for (const variables of [{}, workerEnv('catalog'), { ...workerEnv('fixture'), ARTURIA_ENVIRONMENT: 'prod' }]) {
+    const catalog = { ...workerEnv('catalog'), ARTURIA_LEDGER_TABLE_NAME: 'arturia-ledger-local', ARTURIA_MODEL: 'gpt-6-luna',
+      ARTURIA_PROVIDER_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:arturia-pilot/providers-AbCdEf',
+      ARTURIA_TARIFF_VERIFIED_AT: new Date().toISOString().slice(0, 10) }
+    const staleTariff = { ...catalog, ARTURIA_TARIFF_VERIFIED_AT: '2020-01-01' }
+    const sameTable = { ...catalog, ARTURIA_LEDGER_TABLE_NAME: store.tableName }
+    for (const variables of [{}, workerEnv('catalog'), staleTariff, sameTable, { ...workerEnv('fixture'), ARTURIA_ENVIRONMENT: 'prod' }]) {
       const worker = invoke('worker', message, variables)
       expect(worker.result).toBeUndefined()
       expect(worker.thrown).toBe('Invalid runtime configuration')

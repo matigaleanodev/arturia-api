@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { CORS_ORIGIN_VARIABLE, isAllowedOrigin } from '../http/cors.js'
+import { CATALOG_MODELS, PROVIDER_SECRET_VARIABLE, isFreshDay, isProviderSecretArn } from './catalog-config.js'
 
 type Environment = Readonly<Record<string, string | undefined>>
 
@@ -13,7 +14,7 @@ export class ConfigError extends Error {
   }
 }
 
-export const PROVIDER_MODES = ['fixture', 'fail'] as const
+export const PROVIDER_MODES = ['fixture', 'fail', 'catalog'] as const
 export type ProviderMode = typeof PROVIDER_MODES[number]
 export interface HttpRuntime { readonly tableName: string; readonly clientId: string; readonly allowedOrigin: string }
 export interface WorkerRuntime { readonly tableName: string; readonly environment: string; readonly providerMode: ProviderMode }
@@ -66,6 +67,24 @@ export function loadLedgerRuntime(env: Environment): LedgerRuntime {
   const ledgerTableName = read('ARTURIA_LEDGER_TABLE_NAME', v => tableName.test(v) && v !== env.ARTURIA_TABLE_NAME)
   done()
   return { ledgerTableName }
+}
+
+export interface CatalogRuntime { readonly secretArn: string; readonly model: string; readonly tariffVerifiedAt: string }
+
+/**
+ * Configuration of the billable `catalog` mode. Fails closed on the secret ARN (exact name of the single
+ * provider secret), on a model outside the catalog and on a tariff verification date that is invalid, in the
+ * future or older than 90 days. Calibration and prices are never read from the environment.
+ */
+export function loadCatalogRuntime(env: Environment, now: Date = new Date()): CatalogRuntime {
+  const { read, done } = reader(env)
+  const runtime = {
+    secretArn: read(PROVIDER_SECRET_VARIABLE, isProviderSecretArn),
+    model: read('ARTURIA_MODEL', v => CATALOG_MODELS.includes(v)),
+    tariffVerifiedAt: read('ARTURIA_TARIFF_VERIFIED_AT', v => isFreshDay(v, now)),
+  }
+  done()
+  return runtime
 }
 
 /** Evaluates once per execution environment and keeps either the value or the failure. */

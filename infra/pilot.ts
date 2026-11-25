@@ -14,7 +14,8 @@ import { addAccessLogs, addAlarms, addAlertsTopic, addFunctionLogs } from './obs
 import { addOutbox } from './outbox.ts'
 import { addWebHosting, checkWebDist } from './web-hosting.ts'
 import { addWorker } from './worker.ts'
-import type { ProviderMode } from '../src/config/runtime.ts'
+import { CATALOG_MODELS, isFreshDay, isProviderSecretArn } from '../src/config/catalog-config.ts'
+import type { CatalogRuntime, ProviderMode } from '../src/config/runtime.ts'
 import { TIMING } from '../src/config/timing.ts'
 
 export interface PilotTarget {
@@ -34,10 +35,15 @@ export interface PilotTarget {
   readonly apiAccessLogs?: boolean
   /** Simulated provider of the worker; `fixture` when omitted. */
   readonly providerMode?: PilotProviderMode
+  /** Only in `catalog` mode: the exact provider secret, the model and the date the official tariff was verified. */
+  readonly catalog?: CatalogRuntime
 }
 
-/** Modes selectable by context: only the non-billable simulations, even if the runtime gains real providers. */
-export const PILOT_PROVIDER_MODES = ['fixture', 'fail'] as const satisfies readonly ProviderMode[]
+/**
+ * Modes selectable by context. `catalog` is the only billable one and is accepted only with the secret ARN, the
+ * model and the tariff verification date, in the target account and region (see `catalogContext`).
+ */
+export const PILOT_PROVIDER_MODES = ['fixture', 'fail', 'catalog'] as const satisfies readonly ProviderMode[]
 export type PilotProviderMode = typeof PILOT_PROVIDER_MODES[number]
 
 /** Synthetic production build used by the test synthesis. */
@@ -67,7 +73,12 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   const apiAccessLogs = flag('arturia:apiAccessLogs')
   const providerMode = read('arturia:providerMode')
   if (providerMode !== undefined && !(PILOT_PROVIDER_MODES as readonly string[]).includes(providerMode)) {
-    throw new Error('Invalid arturia:providerMode: use fixture or fail (fixture when omitted)')
+    throw new Error('Invalid arturia:providerMode: use fixture, fail or catalog (fixture when omitted)')
+  }
+  const catalogKeys = ['arturia:providerSecretArn', 'arturia:model', 'arturia:tariffVerifiedAt']
+  if (providerMode !== 'catalog') {
+    const stray = catalogKeys.find(key => read(key) !== undefined)
+    if (stray) throw new Error(`Invalid ${stray}: it only applies with -c arturia:providerMode=catalog`)
   }
   const redeploy = {
     ...(apiRedeploy === undefined ? {} : { apiRedeploy }),
@@ -77,6 +88,7 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   }
   const mode = read('arturia:target') ?? 'synthetic'
   if (mode === 'synthetic') {
+    if (providerMode === 'catalog') throw new Error('Invalid arturia:providerMode: catalog requires -c arturia:target=pilot')
     return { synthetic: true, account: SYNTHETIC_ACCOUNT, region: 'us-east-1', bundleDir: 'infra/fixtures/bundles',
       webDistDir: WEB_FIXTURE_DIR, ...redeploy }
   }
@@ -105,7 +117,21 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   if (workerPaused === undefined) {
     throw new Error('Real pilot synthesis requires -c arturia:workerPaused=true|false (false resumes the worker)')
   }
-  return { synthetic: false, account, region, bundleDir, webDir, webDistDir, ...redeploy }
+  const catalog = providerMode === 'catalog' ? catalogContext(read, account, region) : undefined
+  return { synthetic: false, account, region, bundleDir, webDir, webDistDir, ...redeploy, ...(catalog && { catalog }) }
+}
+
+/** Billable mode: the three values must be valid and the secret must live in the target account and region. */
+function catalogContext(read: (key: string) => string | undefined, account: string, region: string): CatalogRuntime {
+  const secretArn = read('arturia:providerSecretArn') ?? ''
+  const model = read('arturia:model') ?? ''
+  const tariffVerifiedAt = read('arturia:tariffVerifiedAt') ?? ''
+  if (!isProviderSecretArn(secretArn) || secretArn.split(':').slice(3, 5).join(':') !== `${region}:${account}` ||
+      !CATALOG_MODELS.includes(model) || !isFreshDay(tariffVerifiedAt, new Date())) {
+    // The message names the context keys only, never the rejected values.
+    throw new Error('Invalid arturia:providerMode: catalog requires -c arturia:providerSecretArn, arturia:model and arturia:tariffVerifiedAt')
+  }
+  return { secretArn, model, tariffVerifiedAt }
 }
 
 /** Pilot composition root. Code assets go to the foundation bucket; every role is imported. */
@@ -145,7 +171,7 @@ export function createPilotStack(app: App, target: PilotTarget) {
     turnDeadLetters: NAMES.turnDeadLetters, relayDeadLetters: NAMES.relayDeadLetters,
   })
   const worker = addWorker(stack, { table, queue: turnQueue, code: code('worker'), role: role('worker'), functionName: NAMES.workerFunction,
-    providerMode: target.providerMode ?? 'fixture', ledgerTableName: NAMES.ledgerTable, paused: target.workerPaused === true })
+    providerMode: target.providerMode ?? 'fixture', ...(target.catalog && { catalog: target.catalog }), ledgerTableName: NAMES.ledgerTable, paused: target.workerPaused === true })
   const { api, http, stream } = addChatApi(stack, {
     restApiName: NAMES.restApi,
     table, pool: userPool, clientId: client.userPoolClientId, allowedOrigin: webOrigin,

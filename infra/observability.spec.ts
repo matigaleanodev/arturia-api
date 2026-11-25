@@ -264,8 +264,8 @@ describe('provider_mode_context_selects_only_simulated_modes', () => {
   const workerMode = (json: { Resources: Record<string, Resource> }) =>
     workerFunction(json)[1].Properties!.Environment.Variables.ARTURIA_PROVIDER_MODE
 
-  test('the context accepts only fixture and fail and is optional', () => {
-    expect(PILOT_PROVIDER_MODES).toEqual(['fixture', 'fail'])
+  test('the context knows fixture, fail and catalog, and a synthetic target never takes the billable one', () => {
+    expect(PILOT_PROVIDER_MODES).toEqual(['fixture', 'fail', 'catalog'])
     expect(resolvePilotTarget(read({}), {})).toEqual(synthetic)
     expect(resolvePilotTarget(read({ 'arturia:providerMode': 'fixture' }), {})).toEqual({ ...synthetic, providerMode: 'fixture' })
     expect(resolvePilotTarget(read({ 'arturia:providerMode': 'fail' }), {})).toEqual({ ...synthetic, providerMode: 'fail' })

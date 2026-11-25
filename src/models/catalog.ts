@@ -47,6 +47,12 @@ const candidate = (model: string): Entry => {
   if (!match) throw new ModelPolicyDenied('Unsupported model')
   return match
 }
+/** The documented floor rates of a catalog model, in microdollars per million. Unknown models are refused. */
+export function catalogFloor(model: string) {
+  const { provider, input, output, pilotMaxOutputTokens } = candidate(model)
+  const entry: Entry = candidate(model)
+  return { provider, input, output, pilotMaxOutputTokens, ...('shortContext' in entry && { shortContext: { ...entry.shortContext } }) }
+}
 const calibrationOf = (model: string, options: Pick<CatalogOptions, 'calibration'>) =>
   options.calibration && Object.hasOwn(options.calibration, model) ? options.calibration[model] : undefined
 

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { expect, test } from 'vitest'
-import { createDynamoClient, dynamoClientConfig } from './clients.js'
+import { createDynamoClient, createSecretsClient, dynamoClientConfig } from './clients.js'
 import { TIMING } from './timing.js'
 
 test('dynamo_client_has_bounded_timeouts_and_attempts', async () => {
@@ -22,4 +22,16 @@ test('dynamo_client_has_bounded_timeouts_and_attempts', async () => {
 test('dynamo_client_rejects_unbounded_overrides', () => {
   expect(() => dynamoClientConfig({ ...TIMING, persistenceMaxAttempts: 0 })).toThrow(RangeError)
   expect(() => dynamoClientConfig({ ...TIMING, persistenceRequestTimeoutMs: 0 })).toThrow(RangeError)
+})
+
+test('secrets_client_has_bounded_timeouts_and_attempts', async () => {
+  const client = createSecretsClient()
+  try {
+    // Reading the secret is not billable, so the bounded attempts of the persistence clients apply to it as well.
+    expect(await client.config.maxAttempts()).toBe(TIMING.persistenceMaxAttempts)
+    const handler = client.config.requestHandler as { configProvider?: Promise<Record<string, unknown>> }
+    const resolved = await handler.configProvider
+    expect(resolved).toMatchObject({ connectionTimeout: TIMING.persistenceConnectTimeoutMs, requestTimeout: TIMING.persistenceRequestTimeoutMs,
+      throwOnRequestTimeout: true })
+  } finally { client.destroy() }
 })

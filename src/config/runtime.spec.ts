@@ -3,7 +3,7 @@
 
 import { expect, test } from 'vitest'
 import { pilotFixture, FIXTURE_BLOCKS, FIXTURE_INTERVAL_MS } from '../models/fixture-provider.js'
-import { ConfigError, loadHttpRuntime, loadLedgerRuntime, loadWorkerRuntime, memoize } from './runtime.js'
+import { ConfigError, loadCatalogRuntime, loadHttpRuntime, loadLedgerRuntime, loadWorkerRuntime, memoize } from './runtime.js'
 
 const http = { ARTURIA_TABLE_NAME: 'arturia-pilot-table', ARTURIA_CLIENT_ID: 'fixtureclient0123456789abcd',
   ARTURIA_ALLOWED_ORIGIN: 'https://d111111abcdef8.cloudfront.net' }
@@ -24,7 +24,7 @@ test('config_missing_or_invalid_fails_closed', () => {
     [() => loadHttpRuntime({ ...http, ARTURIA_TABLE_NAME: 'tabla con espacios' }), ['ARTURIA_TABLE_NAME']],
     [() => loadHttpRuntime({ ...http, ARTURIA_CLIENT_ID: 'Bearer secret-value!' }), ['ARTURIA_CLIENT_ID']],
     [() => loadWorkerRuntime({}), ['ARTURIA_TABLE_NAME', 'ARTURIA_ENVIRONMENT', 'ARTURIA_PROVIDER_MODE']],
-    [() => loadWorkerRuntime({ ...worker, ARTURIA_PROVIDER_MODE: 'catalog' }), ['ARTURIA_PROVIDER_MODE']],
+    [() => loadWorkerRuntime({ ...worker, ARTURIA_PROVIDER_MODE: 'catalogo' }), ['ARTURIA_PROVIDER_MODE']],
     [() => loadWorkerRuntime({ ...worker, ARTURIA_PROVIDER_MODE: 'FIXTURE' }), ['ARTURIA_PROVIDER_MODE']],
     [() => loadWorkerRuntime({ ...worker, ARTURIA_ENVIRONMENT: 'Pilot!' }), ['ARTURIA_ENVIRONMENT']],
   ]
@@ -33,7 +33,7 @@ test('config_missing_or_invalid_fails_closed', () => {
     expect(error).toBeInstanceOf(ConfigError)
     expect((error as ConfigError).variables).toEqual(variables)
     // Messages name variables only, never the rejected values.
-    for (const value of ['tabla con espacios', 'Bearer secret-value!', 'catalog', 'Pilot!']) {
+    for (const value of ['tabla con espacios', 'Bearer secret-value!', 'catalogo', 'Pilot!']) {
       expect((error as Error).message).not.toContain(value)
     }
   }
@@ -90,4 +90,30 @@ test('fixture_fail_mode_only_in_pilot', () => {
   }
   const error = failure(() => pilotFixture({ environment: 'pilot', providerMode: 'catalog' }))
   expect((error as ConfigError).variables).toEqual(['ARTURIA_PROVIDER_MODE'])
+})
+
+const arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:arturia-pilot/providers-AbCdEf'
+const catalogEnv = { ...worker, ARTURIA_PROVIDER_MODE: 'catalog', ARTURIA_LEDGER_TABLE_NAME: 'arturia-ledger',
+  ARTURIA_PROVIDER_SECRET_ARN: arn, ARTURIA_MODEL: 'gpt-6-luna', ARTURIA_TARIFF_VERIFIED_AT: '2026-11-20' }
+
+test('runtime_catalog_config_requires_secret_arn', () => {
+  expect(loadWorkerRuntime(catalogEnv).providerMode).toBe('catalog')
+  expect(loadCatalogRuntime(catalogEnv)).toEqual({ secretArn: arn, model: 'gpt-6-luna', tariffVerifiedAt: '2026-11-20' })
+  const bad: [Record<string, string>, string[]][] = [
+    [{ ...catalogEnv, ARTURIA_PROVIDER_SECRET_ARN: '' }, ['ARTURIA_PROVIDER_SECRET_ARN']],
+    [{ ...catalogEnv, ARTURIA_PROVIDER_SECRET_ARN: arn.replace('providers', 'other') }, ['ARTURIA_PROVIDER_SECRET_ARN']],
+    [{ ...catalogEnv, ARTURIA_MODEL: 'gpt-4' }, ['ARTURIA_MODEL']],
+    [{ ...catalogEnv, ARTURIA_TARIFF_VERIFIED_AT: '2026-13-40' }, ['ARTURIA_TARIFF_VERIFIED_AT']],
+    [{ ...catalogEnv, ARTURIA_TARIFF_VERIFIED_AT: '2030-01-01' }, ['ARTURIA_TARIFF_VERIFIED_AT']],
+    // Tomorrow's date would pass startup but every send would be denied until then.
+    [{ ...catalogEnv, ARTURIA_TARIFF_VERIFIED_AT: '2026-11-26' }, ['ARTURIA_TARIFF_VERIFIED_AT']],
+  ]
+  for (const [env, variables] of bad) {
+    const error = failure(() => loadCatalogRuntime(env, new Date('2026-11-25T00:00:00Z')))
+    expect(error).toBeInstanceOf(ConfigError)
+    expect((error as ConfigError).variables).toEqual(variables)
+    expect((error as Error).message).not.toContain('gpt-4')
+  }
+  const missing = failure(() => loadCatalogRuntime(worker))
+  expect((missing as ConfigError).variables).toEqual(['ARTURIA_PROVIDER_SECRET_ARN', 'ARTURIA_MODEL', 'ARTURIA_TARIFF_VERIFIED_AT'])
 })
