@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { CORS_ORIGIN_VARIABLE, isAllowedOrigin } from '../http/cors.js'
-import { ENABLED_CATALOG_MODELS, PROVIDER_SECRET_VARIABLE, isFreshDay, isProviderSecretArn } from './catalog-config.js'
+import { ENABLED_CATALOG_MODELS, PROVIDER_PARAMETER_VARIABLE, isFreshDay, isProviderParameterPrefix } from './catalog-config.js'
 
 type Environment = Readonly<Record<string, string | undefined>>
 
@@ -69,17 +69,17 @@ export function loadLedgerRuntime(env: Environment): LedgerRuntime {
   return { ledgerTableName }
 }
 
-export interface CatalogRuntime { readonly secretArn: string; readonly model: string; readonly tariffVerifiedAt: string }
+export interface CatalogRuntime { readonly parameterPrefix: string; readonly model: string; readonly tariffVerifiedAt: string }
 
 /**
- * Configuration of the billable `catalog` mode. Fails closed on the secret ARN (exact name of the single
- * provider secret), on a model outside the catalog and on a tariff verification date that is invalid, in the
+ * Configuration of the billable `catalog` mode. Fails closed on the parameter reference (exactly the fixed Parameter
+ * Store prefix; the keys themselves are never in the environment), on a model outside the catalog and on a tariff verification date that is invalid, in the
  * future or older than 90 days. Calibration and prices are never read from the environment.
  */
 export function loadCatalogRuntime(env: Environment, now: Date = new Date()): CatalogRuntime {
   const { read, done } = reader(env)
   const runtime = {
-    secretArn: read(PROVIDER_SECRET_VARIABLE, isProviderSecretArn),
+    parameterPrefix: read(PROVIDER_PARAMETER_VARIABLE, isProviderParameterPrefix),
     model: read('ARTURIA_MODEL', v => ENABLED_CATALOG_MODELS.includes(v)),
     tariffVerifiedAt: read('ARTURIA_TARIFF_VERIFIED_AT', v => isFreshDay(v, now)),
   }

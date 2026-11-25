@@ -92,16 +92,19 @@ test('fixture_fail_mode_only_in_pilot', () => {
   expect((error as ConfigError).variables).toEqual(['ARTURIA_PROVIDER_MODE'])
 })
 
-const arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:arturia-pilot/providers-AbCdEf'
+const prefix = '/arturia/pilot/providers'
 const catalogEnv = { ...worker, ARTURIA_PROVIDER_MODE: 'catalog', ARTURIA_LEDGER_TABLE_NAME: 'arturia-ledger',
-  ARTURIA_PROVIDER_SECRET_ARN: arn, ARTURIA_MODEL: 'gpt-6-luna', ARTURIA_TARIFF_VERIFIED_AT: '2026-11-20' }
+  ARTURIA_PROVIDER_PARAMETER_PREFIX: prefix, ARTURIA_MODEL: 'gpt-6-luna', ARTURIA_TARIFF_VERIFIED_AT: '2026-11-20' }
 
-test('runtime_catalog_config_requires_secret_arn', () => {
+test('runtime_catalog_config_requires_parameter_reference', () => {
   expect(loadWorkerRuntime(catalogEnv).providerMode).toBe('catalog')
-  expect(loadCatalogRuntime(catalogEnv)).toEqual({ secretArn: arn, model: 'gpt-6-luna', tariffVerifiedAt: '2026-11-20' })
+  expect(loadCatalogRuntime(catalogEnv)).toEqual({ parameterPrefix: prefix, model: 'gpt-6-luna', tariffVerifiedAt: '2026-11-20' })
   const bad: [Record<string, string>, string[]][] = [
-    [{ ...catalogEnv, ARTURIA_PROVIDER_SECRET_ARN: '' }, ['ARTURIA_PROVIDER_SECRET_ARN']],
-    [{ ...catalogEnv, ARTURIA_PROVIDER_SECRET_ARN: arn.replace('providers', 'other') }, ['ARTURIA_PROVIDER_SECRET_ARN']],
+    [{ ...catalogEnv, ARTURIA_PROVIDER_PARAMETER_PREFIX: '' }, ['ARTURIA_PROVIDER_PARAMETER_PREFIX']],
+    [{ ...catalogEnv, ARTURIA_PROVIDER_PARAMETER_PREFIX: '/arturia/pilot/other' }, ['ARTURIA_PROVIDER_PARAMETER_PREFIX']],
+    [{ ...catalogEnv, ARTURIA_PROVIDER_PARAMETER_PREFIX: `${prefix}/openai/api-key` }, ['ARTURIA_PROVIDER_PARAMETER_PREFIX']],
+    // The previous reference, an ARN of Secrets Manager, is no longer accepted.
+    [{ ...catalogEnv, ARTURIA_PROVIDER_PARAMETER_PREFIX: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:arturia-pilot/providers-AbCdEf' }, ['ARTURIA_PROVIDER_PARAMETER_PREFIX']],
     [{ ...catalogEnv, ARTURIA_MODEL: 'gpt-4' }, ['ARTURIA_MODEL']],
     [{ ...catalogEnv, ARTURIA_TARIFF_VERIFIED_AT: '2026-13-40' }, ['ARTURIA_TARIFF_VERIFIED_AT']],
     [{ ...catalogEnv, ARTURIA_TARIFF_VERIFIED_AT: '2030-01-01' }, ['ARTURIA_TARIFF_VERIFIED_AT']],
@@ -118,5 +121,5 @@ test('runtime_catalog_config_requires_secret_arn', () => {
   const disabled = failure(() => loadCatalogRuntime({ ...catalogEnv, ARTURIA_MODEL: 'claude-sonnet-5-5' }, new Date('2026-11-25T00:00:00Z')))
   expect((disabled as ConfigError).variables).toEqual(['ARTURIA_MODEL'])
   const missing = failure(() => loadCatalogRuntime(worker))
-  expect((missing as ConfigError).variables).toEqual(['ARTURIA_PROVIDER_SECRET_ARN', 'ARTURIA_MODEL', 'ARTURIA_TARIFF_VERIFIED_AT'])
+  expect((missing as ConfigError).variables).toEqual(['ARTURIA_PROVIDER_PARAMETER_PREFIX', 'ARTURIA_MODEL', 'ARTURIA_TARIFF_VERIFIED_AT'])
 })

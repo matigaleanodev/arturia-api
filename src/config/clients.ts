@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager'
+import { SSMClient } from '@aws-sdk/client-ssm'
 import { TIMING, type Timing } from './timing.js'
 
 type Persistence = Pick<Timing, 'persistenceConnectTimeoutMs' | 'persistenceRequestTimeoutMs' | 'persistenceMaxAttempts'>
@@ -24,5 +24,5 @@ export function dynamoClientConfig(timing: Persistence = TIMING) {
 
 export const createDynamoClient = (timing: Persistence = TIMING) => new DynamoDBClient(dynamoClientConfig(timing))
 
-/** Secrets Manager client of the worker, with the same bounded timeouts and attempts as the persistence clients. */
-export const createSecretsClient = (timing: Persistence = TIMING) => new SecretsManagerClient(dynamoClientConfig(timing))
+/** Parameter Store client of the worker, with the same bounded timeouts and attempts as the persistence clients. */
+export const createParameterClient = (timing: Persistence = TIMING) => new SSMClient(dynamoClientConfig(timing))

@@ -4,15 +4,19 @@
 // Pure rules of the billable `catalog` mode. This module has no imports on purpose: the runtime, the Lambda bundle
 // and the CDK app (which Node runs without a build) all read the same definitions.
 
-/** The one secret that holds the provider keys. The foundation grants read access to this name only. */
-export const PROVIDER_SECRET_NAME = 'arturia-pilot/providers'
-export const PROVIDER_SECRET_VARIABLE = 'ARTURIA_PROVIDER_SECRET_ARN'
+/**
+ * Systems Manager Parameter Store path under which every provider key lives: one SecureString parameter per provider,
+ * `<prefix>/<provider>/api-key`. The foundation grants read access to the parameter of each enabled provider only.
+ */
+export const PROVIDER_PARAMETER_PREFIX = '/arturia/pilot/providers'
+/** The only provider setting in the environment: a reference to where the keys live, never a key. */
+export const PROVIDER_PARAMETER_VARIABLE = 'ARTURIA_PROVIDER_PARAMETER_PREFIX'
 
-const arnPattern = new RegExp(
-  `^arn:aws:secretsmanager:[a-z]{2}(?:-[a-z]+)+-\\d:\\d{12}:secret:${PROVIDER_SECRET_NAME.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}-[A-Za-z0-9]{6}$`)
+/** Name of the parameter that holds the key of one provider. */
+export const providerParameterName = (provider: string) => `${PROVIDER_PARAMETER_PREFIX}/${provider}/api-key`
 
-/** Full ARN (with the six random characters) of the fixed secret name, commercial partition only. */
-export const isProviderSecretArn = (value: unknown): value is string => typeof value === 'string' && arnPattern.test(value)
+/** The reference must be exactly the fixed prefix: the worker can neither be pointed elsewhere nor lose the grant by a typo. */
+export const isProviderParameterPrefix = (value: unknown): value is string => value === PROVIDER_PARAMETER_PREFIX
 
 /** Models the catalog can serve. A test keeps this list equal to the catalog itself. */
 export const CATALOG_MODELS: readonly string[] = Object.freeze(['gpt-6-luna', 'claude-sonnet-5-5'])

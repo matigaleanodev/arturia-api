@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
 import { randomUUID } from 'node:crypto'
-import { createDynamoClient, createSecretsClient } from '../config/clients.js'
+import { createDynamoClient, createParameterClient } from '../config/clients.js'
 import { ConfigError, loadCatalogRuntime, loadWorkerRuntime, memoize } from '../config/runtime.js'
 import { checkCatalogConfig, createCatalogTurnProvider } from '../models/catalog.js'
 import { PROVIDER_CAPS, catalogSelectionFor } from '../models/catalog-runtime.js'
@@ -72,15 +72,15 @@ const log = createLog()
 const consumer = memoize(() => {
   const runtime = loadWorkerRuntime(process.env)
   if (runtime.providerMode === 'catalog') {
-    // The only billable mode. Every check runs before the first message: an invalid secret ARN, model, tariff date
+    // The only billable mode. Every check runs before the first message: an invalid parameter reference, model, tariff date
     // or ledger table, or a cap below one attempt, fails the whole invocation instead of a single send.
-    const { secretArn, model, tariffVerifiedAt } = loadCatalogRuntime(process.env)
+    const { parameterPrefix, model, tariffVerifiedAt } = loadCatalogRuntime(process.env)
     const selection = catalogSelectionFor(model, tariffVerifiedAt)
     checkCatalogConfig(selection, PROVIDER_CAPS)
     const dynamo = createDynamoClient()
     const store = new ChatStore(dynamo, runtime.tableName)
     const budget = modelBudgetFromEnv(dynamo, process.env, PROVIDER_CAPS)
-    const credentials = createProviderCredentials({ secretArn, client: createSecretsClient() })
+    const credentials = createProviderCredentials({ parameterPrefix, client: createParameterClient() })
     // The response hook receives provider, status and request ID only. Never headers, bodies or keys.
     const wire = createFetchWire({ credentials, onResponse: meta => log('info', 'MODEL_RESPONSE', { ...meta }) })
     const worker = createGenerationWorker(store, createCatalogTurnProvider(store, budget, () => selection, wire))

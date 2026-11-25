@@ -19,7 +19,7 @@ interface WorkerProps {
   readonly role?: iam.IRole
   readonly functionName?: string
   readonly providerMode?: ProviderMode
-  /** Required exactly when the mode is `catalog`: the exact secret ARN, the model and the tariff verification date. */
+  /** Required exactly when the mode is `catalog`: the parameter reference, the model and the tariff verification date. */
   readonly catalog?: CatalogRuntime
   /** Name of the retained ledger table of the foundation. Passed by name: it is not part of this stack. */
   readonly ledgerTableName: string
@@ -36,13 +36,13 @@ interface WorkerProps {
 export function addWorker(scope: Construct, { table, queue, code, role, functionName, providerMode = 'fixture', catalog, ledgerTableName, timing = TIMING,
   paused = false }: WorkerProps) {
   const t = checkTiming(timing)
-  if ((providerMode === 'catalog') !== (catalog !== undefined)) throw new Error('The catalog mode needs its secret, model and tariff date, and only it')
+  if ((providerMode === 'catalog') !== (catalog !== undefined)) throw new Error('The catalog mode needs its parameter reference, model and tariff date, and only it')
   const worker = new lambda.Function(scope, 'GenerationWorker', {
     functionName, runtime: lambda.Runtime.NODEJS_24_X, handler: 'index.handler', code, role,
     timeout: Duration.seconds(t.workerTimeoutSeconds), memorySize: 256,
     environment: { ARTURIA_TABLE_NAME: table.tableName, ARTURIA_ENVIRONMENT: 'pilot', ARTURIA_PROVIDER_MODE: providerMode,
       ARTURIA_LEDGER_TABLE_NAME: ledgerTableName,
-      ...(catalog && { ARTURIA_PROVIDER_SECRET_ARN: catalog.secretArn, ARTURIA_MODEL: catalog.model,
+      ...(catalog && { ARTURIA_PROVIDER_PARAMETER_PREFIX: catalog.parameterPrefix, ARTURIA_MODEL: catalog.model,
         ARTURIA_TARIFF_VERIFIED_AT: catalog.tariffVerifiedAt }) },
   })
   worker.addToRolePolicy(new iam.PolicyStatement({ actions: WORKER_TABLE_ACTIONS, resources: [table.tableArn] }))

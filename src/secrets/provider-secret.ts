@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 // SPDX-FileCopyrightText: 2026 Matias Galeano
 
-import { GetSecretValueCommand, type GetSecretValueCommandOutput } from '@aws-sdk/client-secrets-manager'
-import { ENABLED_PROVIDERS, PROVIDER_SECRET_NAME, PROVIDER_SECRET_VARIABLE, isProviderSecretArn } from '../config/catalog-config.js'
+import { GetParameterCommand, type GetParameterCommandOutput } from '@aws-sdk/client-ssm'
+import {
+  ENABLED_PROVIDERS, PROVIDER_PARAMETER_PREFIX, PROVIDER_PARAMETER_VARIABLE, isProviderParameterPrefix, providerParameterName,
+} from '../config/catalog-config.js'
 import { ConfigError } from '../config/runtime.js'
 
-export { PROVIDER_SECRET_NAME, PROVIDER_SECRET_VARIABLE, isProviderSecretArn }
+export { PROVIDER_PARAMETER_PREFIX, PROVIDER_PARAMETER_VARIABLE, isProviderParameterPrefix, providerParameterName }
 export const CREDENTIAL_PROVIDERS = ['openai', 'anthropic'] as const
 export type CredentialProvider = typeof CREDENTIAL_PROVIDERS[number]
 
@@ -13,10 +15,11 @@ export type CredentialProvider = typeof CREDENTIAL_PROVIDERS[number]
 export const DEFAULT_CREDENTIAL_TTL_MS = 5 * 60_000
 const MAX_CREDENTIAL_TTL_MS = 15 * 60_000
 
-// Printable ASCII without spaces: a key can never smuggle a header separator or a control character.
-const keyPattern = /^[\x21-\x7e]{20,512}$/
+// Letters, digits, dash, underscore and dot: a key can never smuggle a header separator or a control character, and a JSON
+// document or a quoted value pasted by mistake into the parameter is refused instead of being sent as a key.
+const keyPattern = /^[A-Za-z0-9._-]{20,512}$/
 
-/** The key could not be obtained. Never carries the secret, the SDK error or the ARN. */
+/** The key could not be obtained. Never carries the secret, the SDK error or the parameter name. */
 export class CredentialUnavailable extends Error {
   override name = 'CredentialUnavailable'
   constructor() { super('Provider credential unavailable') }
@@ -25,38 +28,27 @@ export class CredentialUnavailable extends Error {
 export interface ProviderCredentials {
   /** Key of one provider. Rejects with {@link CredentialUnavailable} and nothing else. */
   get(provider: CredentialProvider, signal?: AbortSignal): Promise<string>
-  /** Forget the cached keys, so the next use reads the secret again (after the provider rejected a key). */
+  /** Forget the cached keys, so the next use reads the parameters again (after the provider rejected a key). */
   invalidate(): void
 }
 
 interface Options {
-  readonly secretArn: string
-  /** The only operation the reader uses; a `SecretsManagerClient` satisfies it. */
-  readonly client: { send(command: GetSecretValueCommand, options?: { abortSignal?: AbortSignal }): Promise<Pick<GetSecretValueCommandOutput, 'SecretString'>> }
+  /** Reference to where the keys live. Must be exactly {@link PROVIDER_PARAMETER_PREFIX}. */
+  readonly parameterPrefix: string
+  /** The only operation the reader uses; an `SSMClient` satisfies it. */
+  readonly client: { send(command: GetParameterCommand, options?: { abortSignal?: AbortSignal }): Promise<Pick<GetParameterCommandOutput, 'Parameter'>> }
   readonly now?: () => number
   readonly ttlMs?: number
-  /** Providers whose key the secret may hold. Defaults to the enabled providers: a key of any other is refused. */
+  /** Providers whose parameter may be read. Defaults to the enabled providers: any other is refused without a request. */
   readonly providers?: readonly CredentialProvider[]
 }
 
-type Keys = Partial<Record<CredentialProvider, string>>
-
-function parse(secret: unknown, providers: readonly string[]): Keys {
-  const text = (secret as { SecretString?: unknown } | undefined)?.SecretString
-  if (typeof text !== 'string') throw new CredentialUnavailable()
-  let value: unknown
-  try { value = JSON.parse(text) } catch { throw new CredentialUnavailable() }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CredentialUnavailable()
-  const entries = Object.entries(value)
-  if (!entries.length) throw new CredentialUnavailable()
-  const keys: Keys = {}
-  for (const [name, key] of entries) {
-    if (!providers.includes(name) || typeof key !== 'string' || !keyPattern.test(key)) {
-      throw new CredentialUnavailable()
-    }
-    keys[name as CredentialProvider] = key
-  }
-  return keys
+/** The key of a SecureString parameter, or nothing sendable: a plain String or StringList is never accepted. */
+function parse(output: unknown): string {
+  const parameter = (output as { Parameter?: { Type?: unknown; Value?: unknown } } | undefined)?.Parameter
+  const key = parameter?.Value
+  if (parameter?.Type !== 'SecureString' || typeof key !== 'string' || !keyPattern.test(key)) throw new CredentialUnavailable()
+  return key
 }
 
 function until<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -70,34 +62,39 @@ function until<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
 }
 
 /**
- * Reads the provider keys from a single Secrets Manager secret, by its exact ARN. The keys live only in this
- * closure: a short TTL cache, never logged, never part of an error. Every failure is the same constant error.
+ * Reads each provider key from its own SecureString parameter in Parameter Store, by its exact name and only when that
+ * provider is used. The keys live only in this closure: a short TTL cache, never logged, never part of an error. Every
+ * failure (missing parameter, wrong type, invalid value, denied access, timeout) is the same constant error.
  */
-export function createProviderCredentials({ secretArn, client, now = Date.now, ttlMs = DEFAULT_CREDENTIAL_TTL_MS, providers = ENABLED_PROVIDERS as readonly CredentialProvider[] }: Options): ProviderCredentials {
-  if (!isProviderSecretArn(secretArn)) throw new ConfigError([PROVIDER_SECRET_VARIABLE])
+export function createProviderCredentials({ parameterPrefix, client, now = Date.now, ttlMs = DEFAULT_CREDENTIAL_TTL_MS, providers = ENABLED_PROVIDERS as readonly CredentialProvider[] }: Options): ProviderCredentials {
+  if (!isProviderParameterPrefix(parameterPrefix)) throw new ConfigError([PROVIDER_PARAMETER_VARIABLE])
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > MAX_CREDENTIAL_TTL_MS) throw new RangeError('Invalid credential TTL')
-  let cached: { keys: Keys; expiresAt: number } | undefined
-  let loading: Promise<Keys> | undefined
+  const cached = new Map<CredentialProvider, { key: string; expiresAt: number }>()
+  const loading = new Map<CredentialProvider, Promise<string>>()
 
-  const load = (signal?: AbortSignal): Promise<Keys> => {
-    if (cached && now() < cached.expiresAt) return Promise.resolve(cached.keys)
-    loading ??= (async () => {
-      try {
-        const keys = parse(await client.send(new GetSecretValueCommand({ SecretId: secretArn }), { abortSignal: signal }), providers)
-        cached = { keys, expiresAt: now() + ttlMs }
-        return keys
-      } catch { throw new CredentialUnavailable() } finally { loading = undefined }
-    })()
-    return loading
+  const load = (provider: CredentialProvider, signal?: AbortSignal): Promise<string> => {
+    const hit = cached.get(provider)
+    if (hit && now() < hit.expiresAt) return Promise.resolve(hit.key)
+    let pending = loading.get(provider)
+    if (!pending) {
+      pending = (async () => {
+        try {
+          const output = await client.send(new GetParameterCommand({ Name: providerParameterName(provider), WithDecryption: true }), { abortSignal: signal })
+          const key = parse(output)
+          cached.set(provider, { key, expiresAt: now() + ttlMs })
+          return key
+        } catch { throw new CredentialUnavailable() } finally { loading.delete(provider) }
+      })()
+      loading.set(provider, pending)
+    }
+    return pending
   }
 
   return {
     async get(provider, signal) {
       if (!providers.includes(provider)) throw new CredentialUnavailable()
-      const key = (await until(load(signal), signal))[provider]
-      if (!key) throw new CredentialUnavailable()
-      return key
+      return until(load(provider, signal), signal)
     },
-    invalidate() { cached = undefined },
+    invalidate() { cached.clear() },
   }
 }

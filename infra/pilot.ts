@@ -14,7 +14,7 @@ import { addAccessLogs, addAlarms, addAlertsTopic, addFunctionLogs } from './obs
 import { addOutbox } from './outbox.ts'
 import { addWebHosting, checkWebDist } from './web-hosting.ts'
 import { addWorker } from './worker.ts'
-import { ENABLED_CATALOG_MODELS, isFreshDay, isProviderSecretArn } from '../src/config/catalog-config.ts'
+import { ENABLED_CATALOG_MODELS, PROVIDER_PARAMETER_PREFIX, isFreshDay } from '../src/config/catalog-config.ts'
 import type { CatalogRuntime, ProviderMode } from '../src/config/runtime.ts'
 import { TIMING } from '../src/config/timing.ts'
 
@@ -75,7 +75,11 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   if (providerMode !== undefined && !(PILOT_PROVIDER_MODES as readonly string[]).includes(providerMode)) {
     throw new Error('Invalid arturia:providerMode: use fixture, fail or catalog (fixture when omitted)')
   }
-  const catalogKeys = ['arturia:providerSecretArn', 'arturia:model', 'arturia:tariffVerifiedAt']
+  // The provider key lives in Parameter Store at a fixed name: there is nothing to pass. The old key is refused, not ignored.
+  if (read('arturia:providerSecretArn') !== undefined) {
+    throw new Error('Invalid arturia:providerSecretArn: the provider key now lives in Parameter Store at a fixed name; remove this context key')
+  }
+  const catalogKeys = ['arturia:model', 'arturia:tariffVerifiedAt']
   if (providerMode !== 'catalog') {
     const stray = catalogKeys.find(key => read(key) !== undefined)
     if (stray) throw new Error(`Invalid ${stray}: it only applies with -c arturia:providerMode=catalog`)
@@ -117,21 +121,19 @@ export function resolvePilotTarget(context: (key: string) => unknown, env: NodeJ
   if (workerPaused === undefined) {
     throw new Error('Real pilot synthesis requires -c arturia:workerPaused=true|false (false resumes the worker)')
   }
-  const catalog = providerMode === 'catalog' ? catalogContext(read, account, region) : undefined
+  const catalog = providerMode === 'catalog' ? catalogContext(read) : undefined
   return { synthetic: false, account, region, bundleDir, webDir, webDistDir, ...redeploy, ...(catalog && { catalog }) }
 }
 
-/** Billable mode: the three values must be valid and the secret must live in the target account and region. */
-function catalogContext(read: (key: string) => string | undefined, account: string, region: string): CatalogRuntime {
-  const secretArn = read('arturia:providerSecretArn') ?? ''
+/** Billable mode: the model and the tariff verification date must be valid; the parameter reference is fixed. */
+function catalogContext(read: (key: string) => string | undefined): CatalogRuntime {
   const model = read('arturia:model') ?? ''
   const tariffVerifiedAt = read('arturia:tariffVerifiedAt') ?? ''
-  if (!isProviderSecretArn(secretArn) || secretArn.split(':').slice(3, 5).join(':') !== `${region}:${account}` ||
-      !ENABLED_CATALOG_MODELS.includes(model) || !isFreshDay(tariffVerifiedAt, new Date())) {
+  if (!ENABLED_CATALOG_MODELS.includes(model) || !isFreshDay(tariffVerifiedAt, new Date())) {
     // The message names the context keys only, never the rejected values.
-    throw new Error('Invalid arturia:providerMode: catalog requires -c arturia:providerSecretArn, arturia:model and arturia:tariffVerifiedAt')
+    throw new Error('Invalid arturia:providerMode: catalog requires -c arturia:model and arturia:tariffVerifiedAt')
   }
-  return { secretArn, model, tariffVerifiedAt }
+  return { parameterPrefix: PROVIDER_PARAMETER_PREFIX, model, tariffVerifiedAt }
 }
 
 /** Pilot composition root. Code assets go to the foundation bucket; every role is imported. */

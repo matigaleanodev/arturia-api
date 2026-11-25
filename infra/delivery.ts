@@ -6,6 +6,7 @@
 // stack only imports them and creates no IAM. No account ID lives here: every ARN is built from a
 // target, either CloudFormation pseudo parameters or values supplied by the operator.
 
+import { ENABLED_PROVIDERS, PROVIDER_PARAMETER_PREFIX, providerParameterName } from '../src/config/catalog-config.ts'
 import { HTTP_TABLE_ACTIONS } from './chat-api.ts'
 import { WORKER_TABLE_ACTIONS } from './worker.ts'
 
@@ -40,8 +41,8 @@ export const NAMES = {
   table: `${P}chat`,
   /** AI consumption ledger: retained table of the foundation, so recreating the pilot cannot reset the monthly budget. */
   ledgerTable: `${P}ledger`,
-  /** The one secret with the provider keys, created by the administrator (never by CloudFormation) with the console or a file. */
-  providerSecret: 'arturia-pilot/providers',
+  /** Parameter Store path of the provider keys. One SecureString parameter per provider, created by the administrator in the console (never by CloudFormation). */
+  providerParameterPrefix: PROVIDER_PARAMETER_PREFIX,
   turnQueue: `${P}turns.fifo`,
   turnDeadLetters: `${P}turns-dlq.fifo`,
   relayDeadLetters: `${P}relay-dlq`,
@@ -76,7 +77,8 @@ export interface Statement { Effect: 'Allow' | 'Deny'; Action: string[]; Resourc
 
 export const allow = (Action: string[], Resource: string[], Condition?: Condition): Statement =>
   ({ Effect: 'Allow', Action, Resource, ...(Condition ? { Condition } : {}) })
-export const deny = (Action: string[], Resource: string[]): Statement => ({ Effect: 'Deny', Action, Resource })
+export const deny = (Action: string[], Resource: string[], Condition?: Condition): Statement =>
+  ({ Effect: 'Deny', Action, Resource, ...(Condition ? { Condition } : {}) })
 export const policy = (Statement: readonly unknown[]) => ({ Version: '2012-10-17', Statement })
 const trust = (Service: string) =>
   policy([{ Effect: 'Allow', Principal: { Service }, Action: 'sts:AssumeRole' }])
@@ -97,8 +99,13 @@ function arns(t: Target) {
   const topic = regional('sns', NAMES.alertsTopic)
   return {
     table, ledger, tableStream: `${table}/stream/*`, fn, logs,
-    // Secrets Manager appends a dash and six random characters to the name: the pattern pins the name and nothing else.
-    providerSecret: regional('secretsmanager', `secret:${NAMES.providerSecret}-??????`),
+    // The exact parameter of each enabled provider, and the whole prefix (any provider, enabled or not) for the denials.
+    providerParameters: ENABLED_PROVIDERS.map(provider => regional('ssm', `parameter${providerParameterName(provider)}`)),
+    providerParameterTree: regional('ssm', `parameter${PROVIDER_PARAMETER_PREFIX}/*`),
+    // GetParametersByPath is authorized against the requested path: every ancestor of the prefix, the root included.
+    providerParameterAncestors: providerAncestors().map(path => regional('ssm', `parameter${path}`)),
+    // The AWS managed key `aws/ssm` has an ID that is not known when the template is synthesized.
+    anyKey: regional('kms', 'key/*'),
     // Function log groups and the access log group, with and without the log stream suffix.
     logGroups: [`log-group:/aws/lambda/${P}*`, `log-group:${P}*`].map(group => regional('logs', group)),
     alarms: regional('cloudwatch', `alarm:${P}*`),
@@ -118,6 +125,17 @@ function arns(t: Target) {
     pilotStack: regional('cloudformation', `stack/${STACKS.pilot}/*`),
   }
 }
+
+/** `/`, `/a`, `/a/b`, ... up to the prefix itself. */
+function providerAncestors(): string[] {
+  const parts = PROVIDER_PARAMETER_PREFIX.split('/').filter(Boolean)
+  return ['/', ...parts.map((_, index) => '/' + parts.slice(0, index + 1).join('/'))]
+}
+
+/** Decryption of the provider parameters through Parameter Store only, for exactly those parameters. */
+const decryptProviderParameters = (t: Target, parameters: string[], keys: string): Statement =>
+  allow(['kms:Decrypt'], [keys], { StringEquals: { 'kms:ViaService': `ssm.${t.region}.amazonaws.com`,
+    'kms:EncryptionContext:PARAMETER_ARN': parameters.length === 1 ? parameters[0]! : parameters } })
 
 const sameRegion = (t: Target): Condition => ({ StringEquals: { 'aws:RequestedRegion': t.region } })
 const passTo = (service: string): Condition => ({ StringEquals: { 'iam:PassedToService': service } })
@@ -148,8 +166,10 @@ export function rolePolicies(t: Target): Record<RoleName, Statement[]> {
     worker: [
       allow(['logs:CreateLogStream', 'logs:PutLogEvents'], [a.logs(NAMES.workerFunction)]),
       allow([...WORKER_TABLE_ACTIONS], [a.table, a.ledger]),
-      // The provider keys: read one secret, nothing else. The managed `aws/secretsmanager` key needs no KMS grant.
-      allow(['secretsmanager:GetSecretValue'], [a.providerSecret]),
+      // The provider keys: read the parameter of each enabled provider, nothing else. Decryption goes through Parameter Store
+      // and only for those parameters (the encryption context names the parameter).
+      allow(['ssm:GetParameter'], a.providerParameters),
+      decryptProviderParameters(t, a.providerParameters, a.anyKey),
       // The SQS event source polls with the function role.
       allow(['sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility', 'sqs:GetQueueUrl', 'sqs:DeleteMessage',
         'sqs:GetQueueAttributes'], [a.queue(NAMES.turnQueue)]),
@@ -337,7 +357,8 @@ export function boundaryPolicy(t: Target) {
     allow(['dynamodb:ListStreams', 'cognito-idp:CreateUserPool', 'cognito-idp:DescribeUserPoolDomain',
       'lambda:CreateEventSourceMapping', 'logs:DescribeLogGroups', 'logs:DescribeIndexPolicies', 'logs:DescribeResourcePolicies',
       'ec2:DescribeNetworkInterfaces'], ['*'], sameRegion(t)),
-    allow(['secretsmanager:GetSecretValue'], [arns(t).providerSecret]),
+    allow(['ssm:GetParameter'], arns(t).providerParameters),
+    decryptProviderParameters(t, arns(t).providerParameters, arns(t).anyKey),
     allow(['iam:PassRole'], [`arn:${t.partition}:iam::${t.account}:role/${named}`]),
   ])
 }
@@ -358,8 +379,8 @@ export function operatorPolicy(t: Target) {
     allow(['iam:PassRole'], [cfn], passTo('cloudformation.amazonaws.com')),
     allow(['s3:GetObject', 's3:PutObject'], [a.artifacts]),
     allow(['s3:ListBucket', 's3:GetBucketLocation', 's3:GetEncryptionConfiguration'], [a.bucket]),
-    // Confirms the provider secret exists before the billable mode is deployed. It cannot read the value.
-    allow(['secretsmanager:DescribeSecret'], [a.providerSecret]),
+    // No Parameter Store grant on purpose. Confirming that the provider parameter exists (`ssm:DescribeParameters`, metadata
+    // only, wildcard resource) already comes with the base policy of Architect; the denials below keep it from reading the value.
   ])
 }
 
@@ -397,17 +418,21 @@ export function operationsPolicy(t: Target) {
 
 /**
  * Explicit denials of the operator. The account-wide Architect policy allows `dynamodb:*` and secret access on any
- * resource, and an explicit deny wins over any allow. They keep two promises: nobody but the worker reads or writes
- * the provider key, and the AI ledger cannot be emptied or reconfigured with the daily profile (D3). The operator
- * keeps `DescribeSecret` and the item-level access that settlement needs. Changing either takes the administrator.
+ * resource, `aws/ssm` decrypts for every principal of the account, and an explicit deny wins over any allow. They keep
+ * two promises: nobody but the worker reads or writes the provider keys, and the AI ledger cannot be emptied or
+ * reconfigured with the daily profile (D3). The operator keeps `DescribeParameters` (metadata only) and the item-level
+ * access that settlement needs. Changing either takes the administrator.
  */
 export function operatorDenials(t: Target) {
   const a = arns(t)
   return policy([
-    deny(['secretsmanager:GetSecretValue', 'secretsmanager:BatchGetSecretValue', 'secretsmanager:PutSecretValue',
-      'secretsmanager:UpdateSecret', 'secretsmanager:DeleteSecret', 'secretsmanager:RestoreSecret', 'secretsmanager:RotateSecret',
-      'secretsmanager:UpdateSecretVersionStage', 'secretsmanager:PutResourcePolicy', 'secretsmanager:DeleteResourcePolicy',
-      'secretsmanager:ReplicateSecretToRegions'], [a.providerSecret]),
+    // Every way to read, change or remove a parameter of the prefix. GetParameterHistory returns the current value too.
+    deny(['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParameterHistory', 'ssm:PutParameter', 'ssm:DeleteParameter',
+      'ssm:DeleteParameters', 'ssm:LabelParameterVersion', 'ssm:UnlabelParameterVersion'], [a.providerParameterTree]),
+    // GetParametersByPath returns the whole subtree of the path it is called on without checking each parameter.
+    deny(['ssm:GetParametersByPath'], [...a.providerParameterAncestors, a.providerParameterTree]),
+    // `aws/ssm` lets any principal of the account decrypt through Parameter Store: deny it for the parameters of the prefix.
+    deny(['kms:Decrypt'], [a.anyKey], { StringLike: { 'kms:EncryptionContext:PARAMETER_ARN': a.providerParameterTree } }),
     deny(['dynamodb:DeleteItem', 'dynamodb:BatchWriteItem', 'dynamodb:DeleteTable', 'dynamodb:UpdateTable',
       'dynamodb:UpdateContinuousBackups', 'dynamodb:UpdateTimeToLive', 'dynamodb:PutResourcePolicy',
       'dynamodb:DeleteResourcePolicy', 'dynamodb:PartiQLDelete', 'dynamodb:PartiQLUpdate', 'dynamodb:PartiQLInsert',

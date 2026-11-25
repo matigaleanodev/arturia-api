@@ -408,7 +408,7 @@ describe('packaged handlers', () => {
       code: 'CONFIG_INVALID', variables: ['ARTURIA_CLIENT_ID'] }))
     const message = { Records: [{ messageId: 'cfg-1', body: '{}' }] }
     const catalog = { ...workerEnv('catalog'), ARTURIA_LEDGER_TABLE_NAME: 'arturia-ledger-local', ARTURIA_MODEL: 'gpt-6-luna',
-      ARTURIA_PROVIDER_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:arturia-pilot/providers-AbCdEf',
+      ARTURIA_PROVIDER_PARAMETER_PREFIX: '/arturia/pilot/providers',
       ARTURIA_TARIFF_VERIFIED_AT: new Date().toISOString().slice(0, 10) }
     const staleTariff = { ...catalog, ARTURIA_TARIFF_VERIFIED_AT: '2020-01-01' }
     const sameTable = { ...catalog, ARTURIA_LEDGER_TABLE_NAME: store.tableName }

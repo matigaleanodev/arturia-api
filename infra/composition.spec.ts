@@ -179,7 +179,7 @@ describe('iam_minimum_per_function', () => {
     const own: Record<string, RegExp> = {
       stream: /(table\/arturia-pilot-chat|\/aws\/lambda\/arturia-pilot-stream:\*)$/,
       http: /(table\/arturia-pilot-chat|\/aws\/lambda\/arturia-pilot-http:\*)$/,
-      worker: /(table\/arturia-pilot-chat|table\/arturia-pilot-ledger|secret:arturia-pilot\/providers-\?\?\?\?\?\?|arturia-pilot-turns\.fifo|\/aws\/lambda\/arturia-pilot-worker:\*)$/,
+      worker: /(table\/arturia-pilot-chat|table\/arturia-pilot-ledger|parameter\/arturia\/pilot\/providers\/openai\/api-key|:key\/\*|arturia-pilot-turns\.fifo|\/aws\/lambda\/arturia-pilot-worker:\*)$/,
       relay: /(table\/arturia-pilot-chat|table\/arturia-pilot-chat\/stream\/\*|arturia-pilot-turns\.fifo|arturia-pilot-relay-dlq|\/aws\/lambda\/arturia-pilot-relay:\*|^\*)$/,
     }
     for (const [role, pattern] of Object.entries(own)) {
@@ -191,9 +191,12 @@ describe('iam_minimum_per_function', () => {
     const runtime = (['stream', 'http', 'worker', 'relay'] as const).flatMap(role => policies[role])
     expect(runtime.flatMap(s => s.Resource).some(r => r.includes('turns-dlq'))).toBe(false)
     expect(runtime.flatMap(s => s.Action).some(a => a.startsWith('sns:') || a.startsWith('lambda:'))).toBe(false)
-    // Only the worker reads secrets, and only the value of the one provider secret (see provider-secret.spec.ts).
-    const secrets = (['stream', 'http', 'relay'] as const).flatMap(role => policies[role]).flatMap(s => s.Action)
-    expect(secrets.some(a => a.startsWith('secretsmanager:'))).toBe(false)
-    expect(policies.worker.flatMap(s => s.Action).filter(a => a.startsWith('secretsmanager:'))).toEqual(['secretsmanager:GetSecretValue'])
+    // Only the worker reads credentials, and only the one OpenAI parameter (see provider-parameter.spec.ts). Nobody uses Secrets Manager.
+    const others = (['stream', 'http', 'relay'] as const).flatMap(role => policies[role]).flatMap(s => s.Action)
+    expect(others.some(a => a.startsWith('ssm:') || a.startsWith('kms:') || a.startsWith('secretsmanager:'))).toBe(false)
+    const worker = policies.worker.flatMap(s => s.Action)
+    expect(worker.filter(a => a.startsWith('ssm:'))).toEqual(['ssm:GetParameter'])
+    expect(worker.filter(a => a.startsWith('kms:'))).toEqual(['kms:Decrypt'])
+    expect(worker.some(a => a.startsWith('secretsmanager:'))).toBe(false)
   })
 })
